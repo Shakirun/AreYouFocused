@@ -198,6 +198,31 @@ pub fn query_recent_captures(
     Ok(out)
 }
 
+/// Max quick-pick chips shown in the capture UI (distinct bodies by frequency).
+pub const TOP_QUICK_PICKS_CAP: u32 = 5;
+
+/// Distinct capture texts ordered by how often they appear (then alphabetically, case-insensitive).
+pub fn query_top_capture_bodies_by_frequency(
+    conn: &Connection,
+    limit: u32,
+) -> rusqlite::Result<Vec<(String, i64)>> {
+    let lim = (limit as i64).clamp(1, i64::from(TOP_QUICK_PICKS_CAP));
+    let mut stmt = conn.prepare(
+        "SELECT body, COUNT(*) AS cnt FROM captures
+         GROUP BY body
+         ORDER BY cnt DESC, body COLLATE NOCASE ASC
+         LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(params![lim], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,5 +417,21 @@ mod tests {
         assert_eq!(rows[1].0, "coding");
         assert_eq!(rows[0].1, 600);
         assert_eq!(rows[1].1, 100);
+    }
+
+    #[test]
+    fn query_top_capture_bodies_by_frequency_orders_by_count() {
+        let conn = open_memory().expect("db");
+        let mut rng = StdRng::seed_from_u64(2);
+        persist_capture(&conn, "rare", 10, &mut rng).expect("r");
+        persist_capture(&conn, "often", 20, &mut rng).expect("o1");
+        persist_capture(&conn, "often", 30, &mut rng).expect("o2");
+        persist_capture(&conn, "often", 40, &mut rng).expect("o3");
+        let top = query_top_capture_bodies_by_frequency(&conn, 5).expect("top");
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0].0, "often");
+        assert_eq!(top[0].1, 3);
+        assert_eq!(top[1].0, "rare");
+        assert_eq!(top[1].1, 1);
     }
 }

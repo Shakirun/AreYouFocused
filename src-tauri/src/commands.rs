@@ -21,6 +21,13 @@ pub struct CaptureRow {
     pub created_at_unix: i64,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuickPickRow {
+    pub body: String,
+    pub count: i64,
+}
+
 #[tauri::command]
 pub fn get_scheduler_status(state: State<'_, AppState>) -> Result<SchedulerStatus, AppError> {
     let mut db = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -99,5 +106,17 @@ pub fn list_recent_captures(
             body,
             created_at_unix,
         })
+        .collect())
+}
+
+/// Top distinct capture texts by frequency (for quick-insert chips in the capture UI).
+#[tauri::command]
+pub fn list_top_quick_picks(state: State<'_, AppState>) -> Result<Vec<QuickPickRow>, AppError> {
+    let mut db = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = &mut *db;
+    let rows = repo::query_top_capture_bodies_by_frequency(conn, repo::TOP_QUICK_PICKS_CAP)?;
+    Ok(rows
+        .into_iter()
+        .map(|(body, count)| QuickPickRow { body, count })
         .collect())
 }

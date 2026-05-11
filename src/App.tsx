@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { useFitWindowHeight } from "./useFitWindowHeight";
 
@@ -12,6 +12,11 @@ type SchedulerStatus = {
 type CaptureRow = {
   body: string;
   createdAtUnix: number;
+};
+
+type QuickPickRow = {
+  body: string;
+  count: number;
 };
 
 const RECENT_CAPTURES_LIMIT = 15;
@@ -47,8 +52,10 @@ export default function App() {
   useFitWindowHeight();
 
   const labelId = useId();
+  const quickPicksLegendId = useId();
   const minId = useId();
   const maxId = useId();
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -62,6 +69,7 @@ export default function App() {
   const [snoozing, setSnoozing] = useState(false);
   const [repeating, setRepeating] = useState(false);
   const [recentCaptures, setRecentCaptures] = useState<CaptureRow[]>([]);
+  const [quickPicks, setQuickPicks] = useState<QuickPickRow[]>([]);
 
   const latestCaptureBody = recentCaptures[0]?.body?.trim() ?? "";
   const canRepeatLast = latestCaptureBody.length > 0;
@@ -76,6 +84,20 @@ export default function App() {
       setRecentCaptures([]);
     }
   }, []);
+
+  const refreshQuickPicks = useCallback(async () => {
+    try {
+      const rows = await invoke<QuickPickRow[]>("list_top_quick_picks");
+      setQuickPicks(rows);
+    } catch {
+      setQuickPicks([]);
+    }
+  }, []);
+
+  const refreshCaptureLists = useCallback(async () => {
+    await refreshRecentCaptures();
+    await refreshQuickPicks();
+  }, [refreshRecentCaptures, refreshQuickPicks]);
 
   const refreshSchedulerStatus = useCallback(async () => {
     try {
@@ -94,8 +116,8 @@ export default function App() {
 
   useEffect(() => {
     void refreshSchedulerStatus();
-    void refreshRecentCaptures();
-  }, [refreshSchedulerStatus, refreshRecentCaptures]);
+    void refreshCaptureLists();
+  }, [refreshSchedulerStatus, refreshCaptureLists]);
 
   useEffect(() => {
     let cancelled = false;
@@ -117,7 +139,7 @@ export default function App() {
         });
         const offScheduler = await listen("scheduler-updated", () => {
           void refreshSchedulerStatus();
-          void refreshRecentCaptures();
+          void refreshCaptureLists();
         });
         unlisten = () => {
           offPingDue();
@@ -132,7 +154,7 @@ export default function App() {
       cancelled = true;
       unlisten?.();
     };
-  }, [refreshSchedulerStatus, refreshRecentCaptures]);
+  }, [refreshSchedulerStatus, refreshCaptureLists]);
 
   async function onSnooze() {
     setSnoozing(true);
@@ -150,7 +172,7 @@ export default function App() {
     try {
       await invoke<SchedulerStatus>("repeat_last_capture");
       void refreshSchedulerStatus();
-      void refreshRecentCaptures();
+      void refreshCaptureLists();
     } catch (err) {
       setError(String(err));
     } finally {
@@ -201,7 +223,7 @@ export default function App() {
       await invoke("submit_capture", { text: trimmed });
       setText("");
       void refreshSchedulerStatus();
-      void refreshRecentCaptures();
+      void refreshCaptureLists();
     } catch (err) {
       setError(String(err));
     } finally {
@@ -319,6 +341,7 @@ export default function App() {
             Right now
           </label>
           <textarea
+            ref={textareaRef}
             id={labelId}
             value={text}
             onChange={(e) => setText(e.target.value)}
@@ -330,6 +353,48 @@ export default function App() {
             aria-describedby={error ? `${labelId}-err` : undefined}
           />
         </div>
+
+        {quickPicks.length > 0 ? (
+          <div className="flex flex-col gap-1.5">
+            <p
+              id={quickPicksLegendId}
+              className="text-xs font-medium text-ink/65"
+            >
+              Common answers — tap to insert (edit or save as-is)
+            </p>
+            <div
+              role="group"
+              aria-labelledby={quickPicksLegendId}
+              className="flex flex-wrap gap-2"
+            >
+              {quickPicks.map((pick) => (
+                <button
+                  key={pick.body}
+                  type="button"
+                  disabled={saving || repeating}
+                  title={pick.body}
+                  aria-label={`Insert quick answer: ${pick.body}`}
+                  onClick={() => {
+                    setError(null);
+                    setText(pick.body);
+                    requestAnimationFrame(() =>
+                      textareaRef.current?.focus(),
+                    );
+                  }}
+                  className="inline-flex max-w-full min-w-0 cursor-pointer items-center gap-2 rounded-full border border-brand/25 bg-white/95 py-1 pl-2.5 pr-2 text-left text-xs font-medium text-ink/90 shadow-sm transition-colors duration-200 hover:border-brand/40 hover:bg-brand/8 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <span className="min-w-0 flex-1 truncate">{pick.body}</span>
+                  <span
+                    className="shrink-0 tabular-nums text-[0.65rem] font-normal text-ink/45"
+                    aria-hidden
+                  >
+                    ({pick.count})
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
 
         <div className="flex flex-wrap items-center gap-2">
           <button
