@@ -7,7 +7,6 @@ use crate::db::repo;
 use crate::domain::ping_plan;
 use crate::error::AppError;
 use crate::platform::PingNotifier;
-use crate::window_util;
 use crate::AppState;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -79,7 +78,6 @@ pub fn spawn_ping_loop(handle: AppHandle, notifier: Arc<dyn PingNotifier>) {
                 tracing::warn!("scheduler: notify: {e}");
             }
             emit_ping_due(&handle);
-            window_util::show_and_focus_capture(&handle);
 
             if let Some(dev_s) = dev_secs {
                 let resched: Result<(), AppError> = (|| {
