@@ -50,6 +50,8 @@ pub fn update_ping_interval(
 }
 
 fn read_scheduler_status(conn: &Connection) -> Result<SchedulerStatus, AppError> {
+    let mut rng = rand::thread_rng();
+    repo::ensure_next_ping_scheduled(conn, unix_now(), &mut rng)?;
     let next_ping_at_unix = repo::get_next_ping_at_unix(conn)?;
     let (ping_min_minutes, ping_max_minutes) = repo::ping_min_max_minutes(conn)?;
     Ok(SchedulerStatus {

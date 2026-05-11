@@ -21,20 +21,46 @@ pub fn set_next_ping_at_unix(conn: &Connection, unix: i64) -> rusqlite::Result<(
     Ok(())
 }
 
+/// Seconds tolerance when recognizing a **snooze** (`snooze_next_ping`): delay ≈ 10 minutes.
+fn approx_snooze_delay_secs(delta_secs: i64) -> bool {
+    let target = SNOOZE_MINUTES * 60;
+    (delta_secs - target).abs() <= 90
+}
+
+/// Latest moment a newly rolled ping may fall, relative to `now`: `max` interval + small slack.
+fn max_valid_delay_secs(max_m: i64) -> i64 {
+    max_m.saturating_mul(60).saturating_add(60)
+}
+
 /// Returns a `next_ping_at` strictly after `now_unix`.
 ///
 /// If the row is missing **or** still stores a time in the past (stale DB after
 /// reinstall, clock change, or long downtime), rolls a new instant and persists it.
-/// A stale timestamp used to make the scheduler sleep 0s and spam notifications.
+///
+/// If the stored time is **too far** in the future for the **current** min/max bounds
+/// (e.g. user lowered max interval but `next_ping_at` still reflected old long-range
+/// schedule), re-rolls — otherwise the scheduler would sleep for hours with no notifications.
+/// Snooze delays (~10 min) are preserved when they exceed the current max interval (e.g. 1 min).
 pub fn ensure_next_ping_scheduled<R: Rng + ?Sized>(
     conn: &Connection,
     now_unix: i64,
     rng: &mut R,
 ) -> Result<i64, AppError> {
+    let (min_m, max_m) = ping_min_max_minutes(conn)?;
+
     match get_next_ping_at_unix(conn)? {
-        Some(t) if t > now_unix => Ok(t),
+        Some(t) if t > now_unix => {
+            let delta = t.saturating_sub(now_unix);
+            let cap = max_valid_delay_secs(max_m);
+            if delta > cap && !approx_snooze_delay_secs(delta) {
+                let next = ping_plan::next_ping_after(now_unix, min_m, max_m, rng);
+                set_next_ping_at_unix(conn, next)?;
+                Ok(next)
+            } else {
+                Ok(t)
+            }
+        }
         Some(_) | None => {
-            let (min_m, max_m) = ping_min_max_minutes(conn)?;
             let next = ping_plan::next_ping_after(now_unix, min_m, max_m, rng);
             set_next_ping_at_unix(conn, next)?;
             Ok(next)
@@ -261,6 +287,29 @@ mod tests {
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].0, "second");
         assert_eq!(list[1].0, "first");
+    }
+
+    #[test]
+    fn ensure_next_ping_reschedules_when_stored_ping_beyond_max_interval() {
+        let conn = open_memory().expect("db");
+        set_ping_min_max_minutes(&conn, 1, 1).expect("bounds");
+        let now = 5_000_000_i64;
+        set_next_ping_at_unix(&conn, now + 3_600).expect("far future");
+        let mut rng = StdRng::seed_from_u64(42);
+        let next = ensure_next_ping_scheduled(&conn, now, &mut rng).expect("ensure");
+        assert!(next <= now + 2 * 60 + 5);
+        assert!(next > now);
+    }
+
+    #[test]
+    fn ensure_next_ping_preserves_snooze_under_tight_bounds() {
+        let conn = open_memory().expect("db");
+        set_ping_min_max_minutes(&conn, 1, 1).expect("bounds");
+        let now = 8_000_000_i64;
+        snooze_next_ping(&conn, now).expect("snooze");
+        let mut rng = StdRng::seed_from_u64(99);
+        let next = ensure_next_ping_scheduled(&conn, now, &mut rng).expect("ensure");
+        assert_eq!(next, now + SNOOZE_MINUTES * 60);
     }
 
     #[test]
