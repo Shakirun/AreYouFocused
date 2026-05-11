@@ -5,6 +5,39 @@ use crate::error::AppError;
 use rand::Rng;
 use rusqlite::{params, Connection};
 
+pub fn get_next_ping_at_unix(conn: &Connection) -> rusqlite::Result<Option<i64>> {
+    conn.query_row(
+        "SELECT next_ping_at_unix FROM scheduler_state WHERE id = 1",
+        [],
+        |row| row.get::<_, Option<i64>>(0),
+    )
+}
+
+pub fn set_next_ping_at_unix(conn: &Connection, unix: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE scheduler_state SET next_ping_at_unix = ?1 WHERE id = 1",
+        params![unix],
+    )?;
+    Ok(())
+}
+
+/// If `next_ping_at` is missing, pick a random future instant from settings bounds.
+pub fn ensure_next_ping_scheduled<R: Rng + ?Sized>(
+    conn: &Connection,
+    now_unix: i64,
+    rng: &mut R,
+) -> Result<i64, AppError> {
+    match get_next_ping_at_unix(conn)? {
+        Some(t) => Ok(t),
+        None => {
+            let (min_m, max_m) = ping_min_max_minutes(conn)?;
+            let next = ping_plan::next_ping_after(now_unix, min_m, max_m, rng);
+            set_next_ping_at_unix(conn, next)?;
+            Ok(next)
+        }
+    }
+}
+
 pub fn ping_min_max_minutes(conn: &Connection) -> rusqlite::Result<(i64, i64)> {
     let min: i64 = conn.query_row(
         "SELECT CAST(value AS INTEGER) FROM settings WHERE key = 'ping_min_minutes'",
@@ -36,10 +69,7 @@ pub fn persist_capture<R: Rng + ?Sized>(
         params![trimmed, now_unix],
     )?;
     let next = ping_plan::next_ping_after(now_unix, min_m, max_m, rng);
-    conn.execute(
-        "UPDATE scheduler_state SET next_ping_at_unix = ?1 WHERE id = 1",
-        params![next],
-    )?;
+    set_next_ping_at_unix(conn, next)?;
     Ok(())
 }
 
@@ -79,13 +109,27 @@ mod tests {
             .expect("body");
         assert_eq!(body, "working");
 
-        let next: i64 = conn
-            .query_row(
-                "SELECT next_ping_at_unix FROM scheduler_state WHERE id = 1",
-                [],
-                |row| row.get(0),
-            )
-            .expect("next");
+        let next = get_next_ping_at_unix(&conn)
+            .expect("query")
+            .expect("next set");
         assert!(next > now);
+    }
+
+    #[test]
+    fn ensure_next_ping_scheduled_fills_null() {
+        let conn = open_memory().expect("db");
+        let mut rng = StdRng::seed_from_u64(9);
+        let next = ensure_next_ping_scheduled(&conn, 5_000, &mut rng).expect("schedule");
+        assert!(next > 5_000);
+        assert_eq!(get_next_ping_at_unix(&conn).unwrap().unwrap(), next);
+    }
+
+    #[test]
+    fn ensure_next_ping_keeps_existing() {
+        let conn = open_memory().expect("db");
+        let mut rng = StdRng::seed_from_u64(3);
+        let first = ensure_next_ping_scheduled(&conn, 1_000, &mut rng).expect("a");
+        let again = ensure_next_ping_scheduled(&conn, 9_999_999, &mut rng).expect("b");
+        assert_eq!(first, again);
     }
 }
