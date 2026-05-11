@@ -4,9 +4,12 @@ pub mod domain;
 pub mod error;
 pub mod platform;
 mod scheduler;
+#[cfg(desktop)]
+mod tray;
+mod window_util;
 
 use std::sync::{Arc, Mutex};
-use tauri::Manager;
+use tauri::{Manager, WindowEvent};
 
 pub struct AppState {
     pub db: Mutex<rusqlite::Connection>,
@@ -36,7 +39,19 @@ pub fn run() {
             let notifier = Arc::from(platform::current_notifier());
             scheduler::spawn_ping_loop(handle, notifier);
 
+            #[cfg(desktop)]
+            tray::setup_tray(app)?;
+
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if window.label() != "capture" {
+                return;
+            }
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::submit_capture,

@@ -134,6 +134,15 @@ export default function App() {
     }
   }
 
+  async function hideToTray() {
+    try {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      await getCurrentWindow().hide();
+    } catch {
+      // `npm run dev` without Tauri — no window API.
+    }
+  }
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -162,6 +171,10 @@ export default function App() {
           What are you doing?
         </h1>
         <p className="text-sm text-ink/70">Quick capture — honest answer.</p>
+        <p className="text-xs text-ink/50">
+          Closing the window hides it to the system tray; click the tray icon
+          or use the menu to show it again.
+        </p>
         {lastPingAt ? (
           <p className="text-xs text-ink/55" aria-live="polite">
             Last ping at {lastPingAt}
@@ -263,6 +276,15 @@ export default function App() {
           className="cursor-pointer rounded-lg bg-action px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors duration-interaction hover:bg-action-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-action motion-safe:active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
         >
           {saving ? "Saving…" : "Save"}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => void hideToTray()}
+          disabled={saving}
+          className="cursor-pointer self-start rounded-lg border border-brand/30 bg-transparent px-3 py-2 text-sm font-medium text-ink/90 transition-colors hover:bg-brand/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          Hide to tray
         </button>
 
         <div

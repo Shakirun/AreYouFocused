@@ -7,6 +7,7 @@ use crate::db::repo;
 use crate::domain::ping_plan;
 use crate::error::AppError;
 use crate::platform::PingNotifier;
+use crate::window_util;
 use crate::AppState;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -39,17 +40,6 @@ fn emit_ping_due(handle: &AppHandle) {
     if let Err(e) = handle.emit("ping-due", ()) {
         tracing::debug!("scheduler: emit ping-due: {e}");
     }
-}
-
-/// Bring the capture window forward so the user can answer after a ping.
-fn focus_capture_window(handle: &AppHandle) {
-    let Some(win) = handle.get_webview_window("capture") else {
-        tracing::debug!("scheduler: no window labeled capture");
-        return;
-    };
-    let _ = win.unminimize();
-    let _ = win.show();
-    let _ = win.set_focus();
 }
 
 pub fn spawn_ping_loop(handle: AppHandle, notifier: Arc<dyn PingNotifier>) {
@@ -89,7 +79,7 @@ pub fn spawn_ping_loop(handle: AppHandle, notifier: Arc<dyn PingNotifier>) {
                 tracing::warn!("scheduler: notify: {e}");
             }
             emit_ping_due(&handle);
-            focus_capture_window(&handle);
+            window_util::show_and_focus_capture(&handle);
 
             if let Some(dev_s) = dev_secs {
                 let resched: Result<(), AppError> = (|| {
