@@ -1,5 +1,5 @@
 use super::PingNotifier;
-use crate::db::repo;
+use crate::db::repo::{self, NextPingKind};
 use crate::error::AppError;
 use crate::window_util;
 use crate::AppState;
@@ -56,6 +56,19 @@ fn still_from_toast(app: &AppHandle) -> Result<(), AppError> {
     Ok(())
 }
 
+fn trim_for_toast_line(s: &str, max_chars: usize) -> String {
+    let t = s.trim();
+    if t.is_empty() {
+        return String::new();
+    }
+    let count = t.chars().count();
+    if count <= max_chars {
+        return t.to_string();
+    }
+    let taken: String = t.chars().take(max_chars.saturating_sub(1)).collect();
+    format!("{taken}…")
+}
+
 fn toast_app_id(app: &AppHandle) -> String {
     let identifier = app.config().identifier.clone();
     let Ok(exe) = std::env::current_exe() else {
@@ -78,13 +91,22 @@ fn toast_app_id(app: &AppHandle) -> String {
 
 impl PingNotifier for WindowsNotifier {
     fn notify_ping_due(&self, app: &AppHandle) -> Result<(), AppError> {
-        let latest_label = {
+        let (latest_label, toast_secondary) = {
             let state = app.state::<AppState>();
             let mut db = state.db.lock().unwrap_or_else(|p| p.into_inner());
             let conn = &mut *db;
-            repo::latest_capture_body(conn)?
+            let latest_label = repo::latest_capture_body(conn)?
                 .filter(|s| !s.trim().is_empty())
-                .map(|s| still_button_label(&s))
+                .map(|s| still_button_label(&s));
+            let toast_secondary = match repo::get_next_ping_kind(conn)? {
+                NextPingKind::PlannedCheck => {
+                    let subj = repo::get_planned_check_subject(conn)?.unwrap_or_default();
+                    let preview = trim_for_toast_line(&subj, 90);
+                    format!("Planned time is up — still doing this? “{preview}”")
+                }
+                NextPingKind::Standard => "What are you doing right now?".to_string(),
+            };
+            (latest_label, toast_secondary)
         };
 
         let app_id = toast_app_id(app);
@@ -92,7 +114,7 @@ impl PingNotifier for WindowsNotifier {
 
         let mut toast_builder = Toast::new(&app_id)
             .title("AreYouFocused")
-            .text2("What are you doing right now?")
+            .text2(&toast_secondary)
             .duration(Duration::Short);
 
         if let Some(ref label) = latest_label {

@@ -1,35 +1,55 @@
 # AreYouFocused
 
-Desktop-first **random-ping** productivity tracker (WhatNow-style): honest, local-first, SQLite. Product charter and Cursor rules live under **`.cursor/`** locally (not in git).
+Desktop-first **random-ping** productivity tracker (WhatNow-style): honest, local-first, SQLite.
 
 **Language policy:** All **public repo docs**, **in-app UI copy**, and **code comments** are **English** by default. Planned **i18n** for additional locales is described in [I18N.md](I18N.md).
 
+## Features
+
+### Scheduling
+
+- **Random pings:** You configure a **minimum** and **maximum** interval (minutes). The next ping time is rolled at random within that range (persisted in SQLite). Change bounds in the app under **Ping interval** (`update_ping_interval`); applying rolls the next ping from “now.”
+- **Optional planned duration:** Below the capture field you can enter **how many minutes** you plan to keep doing what you described. If set, the next notification is scheduled after exactly that many minutes (“planned check”). When that ping fires, the app asks whether you’re **still on that activity**. Afterward you can enter **extra minutes** to schedule another planned check, or leave minutes **blank** so the next ping follows your usual **random min–max** interval.
+- **Snooze 10 min:** Moves the next ping to **now + 10 minutes** (capture UI and, on Windows, the ping toast). Snooze also **clears** an active planned-activity / follow-up state so timing stays predictable.
+- **Stale next ping:** If the stored next ping is unreasonably far for your current max interval (e.g. after tightening bounds), the app **re-rolls** it when reading scheduler status or in the ping loop—except for delays that look like **snooze** or an active **planned** deadline.
+
+### Capture UI
+
+- **Right now:** Main text capture; **Save** stores a row in `captures` and schedules the next ping (random interval, or planned deadline if minutes are set).
+- **Plan for about (minutes):** Optional; see **Scheduling** above. In **follow-up** mode (after a planned check), the same field means **extra minutes** if you’re still on the activity; leave it empty to use your random interval next.
+- **Common answers:** Up to **five** most frequent saved texts as chips—tap to insert into the field, edit or save as-is.
+- **Still:** Logs another entry with the **same text** as your **last** save (no retyping). Disabled until you have at least one capture.
+- **Recent answers:** Collapsible list of recent captures (newest first).
+- **Window height:** The capture window grows with content (logical width fixed); tray / notifications unchanged.
+
+### Notifications (Windows desktop)
+
+- Ping **toast** includes **Snooze 10 min** and, when there is prior history, **Still** (same as last capture). Opening the capture window works from the toast body tap / tray as before.
+- When the ping is a **planned check**, toast copy reflects that (planned time up — still doing this?).
+
+### Maintainer / QA
+
+- **`AREYOUFOCUSED_DEV_PING_SECS`:** Set to a positive integer (seconds) to fire pings on a fixed short interval for local testing. **Unset** for normal behavior—a stray env var will affect release builds too and can look like notification spam. Example (PowerShell): `$env:AREYOUFOCUSED_DEV_PING_SECS = "15"; npm run tauri:dev`
+
 ## Development
 
-- **TDD only**: red → green → refactor; failing test before implementation (local rule pack under `.cursor/rules/`).
-- **Frontend:** Node 18+, `npm install`, `npm run dev` (Vite + React + **Tailwind**). Design tokens follow the ui-ux-pro-max design system (see `tailwind.config.js`).
-- **Desktop (Tauri 2):** install **Rust** (stable via [rustup](https://rustup.rs/)), on Windows also **MSVC Build Tools**. On Windows the UI needs **WebView2** — see **Runtime (Windows desktop)** below if the window fails to open.
-  - `npm run tauri:dev` — run the app with the Vite dev server (includes a **background scheduler** that waits for `next_ping_at`, shows a ping notification, then rolls the next random interval). A ping **does not** force the capture window open while it stays in the tray; the UI still updates “Last ping at …” via the `ping-due` event when the window is visible. **Windows:** tapping the ping toast brings the capture window to the foreground; you can also open it from the tray.
-  - **System tray (desktop):** closing the capture window **does not quit** — it hides to the tray. **Left-click** the tray icon to show the window again; the tray menu has **Show capture window** and **Quit AreYouFocused**. Requires the `tray-icon` Cargo feature on `tauri` (enabled in this repo).
-  - **Snooze:** the capture UI has **Snooze 10 min** — it writes the next ping time to SQLite as **now + 10 minutes** (overwrites the current scheduled time). **Windows:** the ping toast also has a **Snooze 10 min** action (same behavior; does not open the window). After that ping fires, the usual random interval applies again. With **`AREYOUFOCUSED_DEV_PING_SECS`** set, the fixed-second loop still drives how often notifications run; unset the variable to exercise real snooze timing.
-  - **Faster pings for local QA:** set env **`AREYOUFOCUSED_DEV_PING_SECS`** to a positive integer (seconds). The scheduler then sleeps that long between pings and updates `next_ping_at` deterministically. **Unset this variable** for normal 30–120 minute behavior — a leftover user or machine env var will apply to release builds too and looks like “notification spam.” Example (PowerShell): `$env:AREYOUFOCUSED_DEV_PING_SECS = "15"; npm run tauri:dev`
-  - The UI loads **next ping** and interval bounds from Rust (`get_scheduler_status`), listens for **`ping-due`** (after each OS notification) to refresh, and shows “Last ping at …” plus the upcoming ping time. Use the in-app **Ping interval** section to change min/max minutes (`update_ping_interval`); the next ping is re-rolled from the current time when you apply new bounds. **Recent answers** reads the last captures via `list_recent_captures` (newest first, capped server-side at 50 rows per request).
-  - **Stale next ping:** If the saved `next_ping_at` is farther ahead than your current **max** interval allows (common after narrowing bounds without re-saving), the app **re-rolls** it when reading scheduler status or in the ping loop so notifications match **1–1 min** (etc.). Delays from **Snooze 10 min** are kept when they look like a snooze, even if max is 1 minute.
-  - **`npm run tauri:build`** — production **frontend + Rust release + NSIS installer** (Windows x64). Bundling is **on** in `src-tauri/tauri.conf.json` (`targets`: NSIS, **current-user** install mode, WebView2 via **`downloadBootstrapper`** when needed). After a successful build, look under **`src-tauri/target/release/bundle/nsis/`** for `AreYouFocused_*_x64-setup.exe` (exact filename includes version).
-  - **Icons:** source **`src-tauri/icons-source/app-icon.png`** (square PNG). Regenerate platform icons with `npm run tauri -- icon src-tauri/icons-source/app-icon.png` (writes into `src-tauri/icons/`). Requires [Microsoft Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) for linking release builds.
-  - Rust: `cd src-tauri` then `cargo test` / `cargo check`. Unit tests live in the **library** crate; the `are-you-focused` binary is only a thin `main` shim, so its `[[bin]]` has `test = false` and Cargo will not print a second “0 tests” harness for it.
-- **Cursor + 21st.dev:** after edits to `src/App.tsx`, an optional hook injects a follow-up to run `21st_magic_component_builder` — see `devtools/cursor/README.md` (`.cursor/` is local-only).
+- **Tests:** Rust domain and DB logic live in the library crate—prefer **red → green** for scheduler/repo behavior (`cd src-tauri && cargo test`). The `are-you-focused` binary is a thin shim (`test = false` on the bin).
+- **Frontend:** Node 18+, `npm install`, `npm run dev` (Vite + React + Tailwind). Design tokens are in `tailwind.config.js`.
+- **Desktop (Tauri 2):** Install **Rust** (stable via [rustup](https://rustup.rs/)); on Windows also **MSVC Build Tools**. The UI needs **WebView2** on Windows—see **Runtime (Windows desktop)** below if the window fails to open.
+  - `npm run tauri:dev` — app + Vite dev server; background scheduler waits for `next_ping_at`, shows a ping notification, then applies rescheduling rules above. While the capture window is hidden, pings **do not** force it open; when visible, **Last ping at …** updates via the `ping-due` event.
+  - **System tray:** Closing the capture window **minimizes to tray** (does not quit). **Left-click** tray icon or menu **Show capture window** / **Quit AreYouFocused**. Requires the `tray-icon` feature on `tauri` (enabled in this repo).
+  - **Scheduler API:** `get_scheduler_status` exposes next ping time, interval bounds, and follow-up state (`awaitingFollowup`, `plannedCheckSubject`). `submit_capture` accepts `plannedDurationMinutes` (optional). `list_recent_captures`, `list_top_quick_picks`, `repeat_last_capture`, `snooze_ping`, `update_ping_interval` as documented in code.
+  - **`npm run tauri:build`** — production frontend + Rust + **NSIS** installer (Windows x64). Output under **`src-tauri/target/release/bundle/nsis/`** as `AreYouFocused_*_x64-setup.exe` (version in filename).
+  - **Icons:** Source **`src-tauri/icons-source/app-icon.png`**. Regenerate with `npm run tauri -- icon src-tauri/icons-source/app-icon.png`. Release builds need [Microsoft Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/).
+
+Optional editor-specific tooling or personal notes can live outside tracked files (see `.gitignore`); they are **not** required to build or run the app.
 
 ## Runtime (Windows desktop)
 
-- **OS:** Windows 10 or later (64-bit; same as your Tauri target triple).
-- **WebView2:** the UI runs inside the **Microsoft Edge WebView2** control. The **Evergreen** runtime ships with current Windows 10/11 updates for most users. If the window is blank or the app exits on startup, install or repair the runtime from [WebView2 Runtime — consumer download](https://developer.microsoft.com/microsoft-edge/webview2/consumer/) or the overview at [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/).
-- **Installers:** the NSIS bundle uses **`webviewInstallMode.downloadBootstrapper`** so users without WebView2 get the official bootstrapper when needed; see [Distribute your app and the WebView2 Runtime](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution) for offline or fixed-version layouts if you change that later in `tauri.conf.json`.
+- **OS:** Windows 10 or later (64-bit; matches Tauri target).
+- **WebView2:** UI runs in **Microsoft Edge WebView2**. **Evergreen** runtime ships with current Windows 10/11 for most users. If the window is blank or the app exits on startup, install or repair from [WebView2 Runtime — consumer download](https://developer.microsoft.com/microsoft-edge/webview2/consumer/) or [WebView2 overview](https://developer.microsoft.com/microsoft-edge/webview2/).
+- **Installers:** NSIS uses **`webviewInstallMode.downloadBootstrapper`** so users without WebView2 get the official bootstrapper when needed; see [Distribute your app and the WebView2 Runtime](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution).
 
 ## Git branches
 
 Integrate on **`develop`** (unstable `*-dev.*` versions); ship stable releases via MR **`develop` → `main`**. Details: [RELEASING.md](RELEASING.md).
-
-## Agent / Cursor (local workspace only)
-
-Handbook (`AGENTS.md`), `docs/`, and `.cursor/` are **gitignored** — keep them on your machine; they are not part of the shared repo. Copy `.cursor/mcp.json.example` → `.cursor/mcp.json` for MCP when needed.

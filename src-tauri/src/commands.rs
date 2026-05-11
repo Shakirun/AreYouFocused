@@ -2,8 +2,16 @@ use crate::db::repo;
 use crate::error::AppError;
 use crate::AppState;
 use rusqlite::Connection;
+use serde::Deserialize;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::State;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmitCaptureInput {
+    pub text: String,
+    pub planned_duration_minutes: Option<i64>,
+}
 
 /// Snapshot of scheduler row + ping interval settings for the UI.
 #[derive(serde::Serialize)]
@@ -12,6 +20,8 @@ pub struct SchedulerStatus {
     pub next_ping_at_unix: Option<i64>,
     pub ping_min_minutes: i64,
     pub ping_max_minutes: i64,
+    pub awaiting_followup: bool,
+    pub planned_check_subject: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -19,6 +29,16 @@ pub struct SchedulerStatus {
 pub struct CaptureRow {
     pub body: String,
     pub created_at_unix: i64,
+    pub duration_minutes: Option<i64>,
+    pub thread_root: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityDigestRow {
+    pub thread_root: String,
+    pub total_minutes: i64,
+    pub capture_count: i64,
 }
 
 #[derive(serde::Serialize)]
@@ -70,10 +90,14 @@ fn read_scheduler_status(conn: &Connection) -> Result<SchedulerStatus, AppError>
     repo::ensure_next_ping_scheduled(conn, unix_now(), &mut rng)?;
     let next_ping_at_unix = repo::get_next_ping_at_unix(conn)?;
     let (ping_min_minutes, ping_max_minutes) = repo::ping_min_max_minutes(conn)?;
+    let awaiting_followup = repo::get_awaiting_followup(conn)?;
+    let planned_check_subject = repo::get_planned_check_subject(conn)?;
     Ok(SchedulerStatus {
         next_ping_at_unix,
         ping_min_minutes,
         ping_max_minutes,
+        awaiting_followup,
+        planned_check_subject,
     })
 }
 
@@ -85,10 +109,19 @@ fn unix_now() -> i64 {
 }
 
 #[tauri::command]
-pub fn submit_capture(state: State<'_, AppState>, text: String) -> Result<(), AppError> {
+pub fn submit_capture(
+    state: State<'_, AppState>,
+    input: SubmitCaptureInput,
+) -> Result<(), AppError> {
     let mut db = state.db.lock().unwrap_or_else(|e| e.into_inner());
     let conn = &mut *db;
-    repo::persist_capture(conn, &text, unix_now(), &mut rand::thread_rng())
+    repo::persist_capture(
+        conn,
+        &input.text,
+        unix_now(),
+        &mut rand::thread_rng(),
+        input.planned_duration_minutes,
+    )
 }
 
 #[tauri::command]
@@ -102,10 +135,34 @@ pub fn list_recent_captures(
     let rows = repo::query_recent_captures(conn, lim)?;
     Ok(rows
         .into_iter()
-        .map(|(body, created_at_unix)| CaptureRow {
-            body,
-            created_at_unix,
-        })
+        .map(
+            |(body, created_at_unix, duration_minutes, thread_root)| CaptureRow {
+                body,
+                created_at_unix,
+                duration_minutes,
+                thread_root,
+            },
+        )
+        .collect())
+}
+
+#[tauri::command]
+pub fn list_activity_digest(
+    state: State<'_, AppState>,
+    since_unix: i64,
+) -> Result<Vec<ActivityDigestRow>, AppError> {
+    let mut db = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = &mut *db;
+    let rows = repo::query_activity_digest(conn, since_unix)?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(thread_root, total_minutes, capture_count)| ActivityDigestRow {
+                thread_root,
+                total_minutes,
+                capture_count,
+            },
+        )
         .collect())
 }
 

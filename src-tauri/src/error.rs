@@ -11,6 +11,8 @@ pub enum AppError {
     NoPriorCapture,
     #[error("ping interval: {0}")]
     InvalidPingBounds(String),
+    #[error("planned duration must be between 1 minute and one week")]
+    InvalidPlannedDuration,
     #[error("notification: {0}")]
     Notify(String),
 }

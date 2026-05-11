@@ -59,6 +59,7 @@ pub fn run() {
             commands::repeat_last_capture,
             commands::update_ping_interval,
             commands::list_recent_captures,
+            commands::list_activity_digest,
             commands::list_top_quick_picks,
         ])
         .run(tauri::generate_context!())
