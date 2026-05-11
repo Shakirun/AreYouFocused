@@ -21,15 +21,19 @@ pub fn set_next_ping_at_unix(conn: &Connection, unix: i64) -> rusqlite::Result<(
     Ok(())
 }
 
-/// If `next_ping_at` is missing, pick a random future instant from settings bounds.
+/// Returns a `next_ping_at` strictly after `now_unix`.
+///
+/// If the row is missing **or** still stores a time in the past (stale DB after
+/// reinstall, clock change, or long downtime), rolls a new instant and persists it.
+/// A stale timestamp used to make the scheduler sleep 0s and spam notifications.
 pub fn ensure_next_ping_scheduled<R: Rng + ?Sized>(
     conn: &Connection,
     now_unix: i64,
     rng: &mut R,
 ) -> Result<i64, AppError> {
     match get_next_ping_at_unix(conn)? {
-        Some(t) => Ok(t),
-        None => {
+        Some(t) if t > now_unix => Ok(t),
+        Some(_) | None => {
             let (min_m, max_m) = ping_min_max_minutes(conn)?;
             let next = ping_plan::next_ping_after(now_unix, min_m, max_m, rng);
             set_next_ping_at_unix(conn, next)?;
@@ -167,12 +171,24 @@ mod tests {
     }
 
     #[test]
-    fn ensure_next_ping_keeps_existing() {
+    fn ensure_next_ping_keeps_existing_when_still_future() {
         let conn = open_memory().expect("db");
         let mut rng = StdRng::seed_from_u64(3);
         let first = ensure_next_ping_scheduled(&conn, 1_000, &mut rng).expect("a");
-        let again = ensure_next_ping_scheduled(&conn, 9_999_999, &mut rng).expect("b");
+        assert!(first > 1_000);
+        let mid = 1_000 + (first - 1_000) / 2;
+        let again = ensure_next_ping_scheduled(&conn, mid, &mut rng).expect("b");
         assert_eq!(first, again);
+    }
+
+    #[test]
+    fn ensure_next_ping_advances_when_overdue() {
+        let conn = open_memory().expect("db");
+        let mut rng = StdRng::seed_from_u64(3);
+        let first = ensure_next_ping_scheduled(&conn, 1_000, &mut rng).expect("a");
+        let future_now = first + 3_600;
+        let rolled = ensure_next_ping_scheduled(&conn, future_now, &mut rng).expect("roll");
+        assert!(rolled > future_now);
     }
 
     #[test]
