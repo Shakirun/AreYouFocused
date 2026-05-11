@@ -7,6 +7,9 @@ type SchedulerStatus = {
   pingMaxMinutes: number;
 };
 
+/** Matches `repo::PING_MAX_MINUTES_CAP` (one week). */
+const PING_MAX_MINUTES_CAP = 10_080;
+
 function formatNextPing(unix: number | null): string {
   if (unix == null) {
     return "Next ping: not scheduled yet.";
@@ -20,12 +23,18 @@ function formatNextPing(unix: number | null): string {
 /** Quick-capture shell. All user-facing strings are English until i18n (see /I18N.md). */
 export default function App() {
   const labelId = useId();
+  const minId = useId();
+  const maxId = useId();
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [lastPingAt, setLastPingAt] = useState<string | null>(null);
   const [schedulerLine, setSchedulerLine] = useState<string | null>(null);
   const [intervalLine, setIntervalLine] = useState<string | null>(null);
+  const [boundsMin, setBoundsMin] = useState(30);
+  const [boundsMax, setBoundsMax] = useState(120);
+  const [intervalError, setIntervalError] = useState<string | null>(null);
+  const [applyingInterval, setApplyingInterval] = useState(false);
 
   const refreshSchedulerStatus = useCallback(async () => {
     try {
@@ -34,6 +43,8 @@ export default function App() {
       setIntervalLine(
         `Random interval: ${s.pingMinMinutes}–${s.pingMaxMinutes} min`,
       );
+      setBoundsMin(s.pingMinMinutes);
+      setBoundsMax(s.pingMaxMinutes);
     } catch {
       setSchedulerLine(null);
       setIntervalLine(null);
@@ -72,6 +83,36 @@ export default function App() {
       unlisten?.();
     };
   }, [refreshSchedulerStatus]);
+
+  async function onApplyInterval() {
+    setIntervalError(null);
+    if (boundsMin < 1) {
+      setIntervalError("Minimum must be at least 1 minute.");
+      return;
+    }
+    if (boundsMax < boundsMin) {
+      setIntervalError("Maximum must be greater than or equal to minimum.");
+      return;
+    }
+    if (boundsMax > PING_MAX_MINUTES_CAP) {
+      setIntervalError(
+        `Maximum must be at most ${PING_MAX_MINUTES_CAP} minutes (one week).`,
+      );
+      return;
+    }
+    setApplyingInterval(true);
+    try {
+      await invoke<SchedulerStatus>("update_ping_interval", {
+        pingMinMinutes: boundsMin,
+        pingMaxMinutes: boundsMax,
+      });
+      void refreshSchedulerStatus();
+    } catch (err) {
+      setIntervalError(String(err));
+    } finally {
+      setApplyingInterval(false);
+    }
+  }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -116,6 +157,63 @@ export default function App() {
           </p>
         ) : null}
       </header>
+
+      <details className="rounded-lg border border-brand/20 bg-white/80 px-3 py-2 shadow-sm open:pb-3">
+        <summary className="cursor-pointer select-none text-sm font-medium text-ink">
+          Ping interval
+        </summary>
+        <div className="mt-3 flex flex-col gap-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1">
+              <label htmlFor={minId} className="text-xs font-medium text-ink/80">
+                Min (minutes)
+              </label>
+              <input
+                id={minId}
+                type="number"
+                min={1}
+                max={PING_MAX_MINUTES_CAP}
+                value={boundsMin}
+                onChange={(e) =>
+                  setBoundsMin(Number.parseInt(e.target.value, 10) || 0)
+                }
+                disabled={applyingInterval}
+                className="rounded-md border border-brand/25 px-2 py-1.5 text-sm text-ink outline-none ring-brand/15 focus:border-brand focus:ring-2 disabled:opacity-60"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor={maxId} className="text-xs font-medium text-ink/80">
+                Max (minutes)
+              </label>
+              <input
+                id={maxId}
+                type="number"
+                min={1}
+                max={PING_MAX_MINUTES_CAP}
+                value={boundsMax}
+                onChange={(e) =>
+                  setBoundsMax(Number.parseInt(e.target.value, 10) || 0)
+                }
+                disabled={applyingInterval}
+                className="rounded-md border border-brand/25 px-2 py-1.5 text-sm text-ink outline-none ring-brand/15 focus:border-brand focus:ring-2 disabled:opacity-60"
+              />
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => void onApplyInterval()}
+            disabled={applyingInterval}
+            className="self-start rounded-md border border-brand/30 bg-brand/10 px-3 py-1.5 text-sm font-medium text-ink transition-colors hover:bg-brand/15 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {applyingInterval ? "Applying…" : "Apply interval"}
+          </button>
+          {intervalError ? (
+            <p className="text-sm font-medium text-red-600" role="status">
+              {intervalError}
+            </p>
+          ) : null}
+        </div>
+      </details>
 
       <form onSubmit={onSubmit} className="flex flex-col gap-3">
         <div className="flex flex-col gap-2">

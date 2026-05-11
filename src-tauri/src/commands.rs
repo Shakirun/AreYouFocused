@@ -1,6 +1,7 @@
 use crate::db::repo;
 use crate::error::AppError;
 use crate::AppState;
+use rusqlite::Connection;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::State;
 
@@ -17,6 +18,23 @@ pub struct SchedulerStatus {
 pub fn get_scheduler_status(state: State<'_, AppState>) -> Result<SchedulerStatus, AppError> {
     let mut db = state.db.lock().unwrap_or_else(|e| e.into_inner());
     let conn = &mut *db;
+    read_scheduler_status(conn)
+}
+
+#[tauri::command]
+pub fn update_ping_interval(
+    state: State<'_, AppState>,
+    ping_min_minutes: i64,
+    ping_max_minutes: i64,
+) -> Result<SchedulerStatus, AppError> {
+    let mut db = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = &mut *db;
+    repo::set_ping_min_max_minutes(conn, ping_min_minutes, ping_max_minutes)?;
+    repo::reschedule_next_ping_from_now(conn, unix_now(), &mut rand::thread_rng())?;
+    read_scheduler_status(conn)
+}
+
+fn read_scheduler_status(conn: &Connection) -> Result<SchedulerStatus, AppError> {
     let next_ping_at_unix = repo::get_next_ping_at_unix(conn)?;
     let (ping_min_minutes, ping_max_minutes) = repo::ping_min_max_minutes(conn)?;
     Ok(SchedulerStatus {

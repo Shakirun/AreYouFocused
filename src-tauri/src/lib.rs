@@ -41,6 +41,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::submit_capture,
             commands::get_scheduler_status,
+            commands::update_ping_interval,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
