@@ -29,6 +29,14 @@ pub fn get_scheduler_status(state: State<'_, AppState>) -> Result<SchedulerStatu
 }
 
 #[tauri::command]
+pub fn snooze_ping(state: State<'_, AppState>) -> Result<SchedulerStatus, AppError> {
+    let mut db = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = &mut *db;
+    repo::snooze_next_ping(conn, unix_now())?;
+    read_scheduler_status(conn)
+}
+
+#[tauri::command]
 pub fn update_ping_interval(
     state: State<'_, AppState>,
     ping_min_minutes: i64,

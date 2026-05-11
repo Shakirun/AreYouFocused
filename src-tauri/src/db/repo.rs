@@ -59,6 +59,16 @@ pub fn ping_min_max_minutes(conn: &Connection) -> rusqlite::Result<(i64, i64)> {
 /// Upper bound for `ping_max_minutes` (one week). Keeps scheduling math predictable.
 pub const PING_MAX_MINUTES_CAP: i64 = 10_080;
 
+/// Fixed snooze delay (minutes). Next ping is set to `now + this many minutes`, persisted in `scheduler_state`.
+pub const SNOOZE_MINUTES: i64 = 10;
+
+/// Pushes the next ping to **now + [SNOOZE_MINUTES]**, overwriting any earlier scheduled time.
+pub fn snooze_next_ping(conn: &Connection, now_unix: i64) -> rusqlite::Result<i64> {
+    let next = now_unix.saturating_add(SNOOZE_MINUTES * 60);
+    set_next_ping_at_unix(conn, next)?;
+    Ok(next)
+}
+
 pub fn set_ping_min_max_minutes(conn: &Connection, min_m: i64, max_m: i64) -> Result<(), AppError> {
     if min_m < 1 {
         return Err(AppError::InvalidPingBounds(
@@ -251,6 +261,22 @@ mod tests {
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].0, "second");
         assert_eq!(list[1].0, "first");
+    }
+
+    #[test]
+    fn snooze_next_ping_sets_ten_minutes_ahead() {
+        let conn = open_memory().expect("db");
+        let mut rng = StdRng::seed_from_u64(1);
+        let now = 1_000_000_i64;
+        ensure_next_ping_scheduled(&conn, now, &mut rng).expect("seed schedule");
+        assert!(get_next_ping_at_unix(&conn).unwrap().unwrap() > now);
+
+        let after_snooze = snooze_next_ping(&conn, now).expect("snooze");
+        assert_eq!(after_snooze, now + SNOOZE_MINUTES * 60);
+        assert_eq!(
+            get_next_ping_at_unix(&conn).unwrap().unwrap(),
+            now + SNOOZE_MINUTES * 60
+        );
     }
 
     #[test]

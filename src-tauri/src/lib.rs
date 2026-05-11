@@ -55,6 +55,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::submit_capture,
             commands::get_scheduler_status,
+            commands::snooze_ping,
             commands::update_ping_interval,
             commands::list_recent_captures,
         ])

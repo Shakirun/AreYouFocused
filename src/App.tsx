@@ -42,6 +42,7 @@ export default function App() {
   const [boundsMax, setBoundsMax] = useState(120);
   const [intervalError, setIntervalError] = useState<string | null>(null);
   const [applyingInterval, setApplyingInterval] = useState(false);
+  const [snoozing, setSnoozing] = useState(false);
   const [recentCaptures, setRecentCaptures] = useState<CaptureRow[]>([]);
 
   const refreshRecentCaptures = useCallback(async () => {
@@ -103,6 +104,16 @@ export default function App() {
       unlisten?.();
     };
   }, [refreshSchedulerStatus]);
+
+  async function onSnooze() {
+    setSnoozing(true);
+    try {
+      await invoke<SchedulerStatus>("snooze_ping");
+      void refreshSchedulerStatus();
+    } finally {
+      setSnoozing(false);
+    }
+  }
 
   async function onApplyInterval() {
     setIntervalError(null);
@@ -180,6 +191,22 @@ export default function App() {
           <p className="text-xs text-ink/45" aria-live="polite">
             {intervalLine}
           </p>
+        ) : null}
+        {schedulerLine ? (
+          <div className="pt-1">
+            <button
+              type="button"
+              onClick={() => void onSnooze()}
+              disabled={snoozing}
+              className="cursor-pointer rounded-md border border-brand/30 bg-white/90 px-2.5 py-1 text-xs font-medium text-ink/90 transition-colors hover:bg-brand/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {snoozing ? "Snoozing…" : "Snooze 10 min"}
+            </button>
+            <p className="mt-1 text-[0.65rem] leading-snug text-ink/45">
+              Next ping moves to about ten minutes from now (saved; survives
+              restart). Normal random interval applies after that ping.
+            </p>
+          </div>
         ) : null}
       </header>
 
