@@ -1,23 +1,23 @@
-## Релиз: develop → main
+## Release: develop → main
 
-**Версия после merge (стабильная):** `0.x.y`  
-**Тег (если нужен):** `v0.x.y`
+**Stable version after merge:** `0.x.y`  
+**Tag (optional):** `v0.x.y`
 
-### Что вошло в релиз
+### What ships
 
-<!-- Перечислите пользовательские изменения, PR-ы или коммит-диапазон -->
-
--
+<!-- List user-facing changes, PRs, or commit range -->
 
 -
 
-### Риски / миграции
+-
+
+### Risks / migrations
 
 -
 
-### Чеклист перед merge
+### Pre-merge checklist
 
-- [ ] Сборка и тесты на `develop` зелёные
-- [ ] `package.json` version обновлён на стабильную
-- [ ] README / релизные заметки обновлены при необходимости
-- [ ] После merge: план слияния `main` → `develop` и bump dev-версии
+- [ ] `develop` build and tests are green
+- [ ] `package.json` version updated to stable
+- [ ] README / release notes updated if needed
+- [ ] After merge: plan merging `main` back into `develop` and bump dev version
