@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AreYouFocused",
+  "version": "0.2.0",
+  "identifier": "dev.areyoufocused.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "capture",
+        "title": "AreYouFocused — Capture",
+        "width": 420,
+        "height": 280,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    },
+    "capabilities": ["default"]
+  },
+  "bundle": {
+    "active": false,
+    "targets": "all",
+    "icon": []
+  },
+  "plugins": {}
+}
