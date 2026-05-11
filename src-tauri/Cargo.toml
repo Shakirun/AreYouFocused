@@ -1,0 +1,31 @@
+[package]
+name = "are_you_focused"
+version = "0.2.0"
+description = "AreYouFocused"
+authors = ["You"]
+edition = "2021"
+
+[lib]
+name = "are_you_focused_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "are-you-focused"
+path = "src/main.rs"
+# Lib holds all unit tests; main is a thin shim — skip the empty binary test harness.
+test = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-notification = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+rand = "0.8"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rusqlite = { version = "0.32", features = ["bundled"] }

@@ -142,6 +142,10 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
 
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+
 # Local only: Cursor config, MCP secrets, agent handbook, design/docs (solo dev).
 .cursor
 docs
