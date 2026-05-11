@@ -52,6 +52,48 @@ pub fn ping_min_max_minutes(conn: &Connection) -> rusqlite::Result<(i64, i64)> {
     Ok((min, max))
 }
 
+/// Upper bound for `ping_max_minutes` (one week). Keeps scheduling math predictable.
+pub const PING_MAX_MINUTES_CAP: i64 = 10_080;
+
+pub fn set_ping_min_max_minutes(conn: &Connection, min_m: i64, max_m: i64) -> Result<(), AppError> {
+    if min_m < 1 {
+        return Err(AppError::InvalidPingBounds(
+            "minimum must be at least 1 minute".into(),
+        ));
+    }
+    if max_m < min_m {
+        return Err(AppError::InvalidPingBounds(
+            "maximum must be greater than or equal to minimum".into(),
+        ));
+    }
+    if max_m > PING_MAX_MINUTES_CAP {
+        return Err(AppError::InvalidPingBounds(format!(
+            "maximum must be at most {PING_MAX_MINUTES_CAP} minutes (one week)"
+        )));
+    }
+    conn.execute(
+        "UPDATE settings SET value = ?1 WHERE key = 'ping_min_minutes'",
+        params![min_m.to_string()],
+    )?;
+    conn.execute(
+        "UPDATE settings SET value = ?1 WHERE key = 'ping_max_minutes'",
+        params![max_m.to_string()],
+    )?;
+    Ok(())
+}
+
+/// Re-roll `next_ping_at` from **now** using current settings (used after interval change).
+pub fn reschedule_next_ping_from_now<R: Rng + ?Sized>(
+    conn: &Connection,
+    now_unix: i64,
+    rng: &mut R,
+) -> Result<(), AppError> {
+    let (min_m, max_m) = ping_min_max_minutes(conn)?;
+    let next = ping_plan::next_ping_after(now_unix, min_m, max_m, rng);
+    set_next_ping_at_unix(conn, next)?;
+    Ok(())
+}
+
 pub fn persist_capture<R: Rng + ?Sized>(
     conn: &Connection,
     text: &str,
@@ -131,5 +173,36 @@ mod tests {
         let first = ensure_next_ping_scheduled(&conn, 1_000, &mut rng).expect("a");
         let again = ensure_next_ping_scheduled(&conn, 9_999_999, &mut rng).expect("b");
         assert_eq!(first, again);
+    }
+
+    #[test]
+    fn set_ping_bounds_rejects_invalid() {
+        let conn = open_memory().expect("db");
+        assert!(matches!(
+            set_ping_min_max_minutes(&conn, 0, 60),
+            Err(AppError::InvalidPingBounds(_))
+        ));
+        assert!(matches!(
+            set_ping_min_max_minutes(&conn, 10, 5),
+            Err(AppError::InvalidPingBounds(_))
+        ));
+        assert!(matches!(
+            set_ping_min_max_minutes(&conn, 1, PING_MAX_MINUTES_CAP + 1),
+            Err(AppError::InvalidPingBounds(_))
+        ));
+    }
+
+    #[test]
+    fn set_ping_bounds_and_reschedule() {
+        let conn = open_memory().expect("db");
+        let mut rng = StdRng::seed_from_u64(11);
+        set_ping_min_max_minutes(&conn, 5, 10).expect("set");
+        assert_eq!(ping_min_max_minutes(&conn).unwrap(), (5, 10));
+        let now = 2_000_000_i64;
+        reschedule_next_ping_from_now(&conn, now, &mut rng).expect("roll");
+        let next = get_next_ping_at_unix(&conn).unwrap().unwrap();
+        assert!(next > now);
+        assert!(next <= now + 10 * 60 + 1);
+        assert!(next >= now + 5 * 60);
     }
 }
