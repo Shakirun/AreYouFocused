@@ -3,8 +3,9 @@ pub mod db;
 pub mod domain;
 pub mod error;
 pub mod platform;
+mod scheduler;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 pub struct AppState {
@@ -28,6 +29,11 @@ pub fn run() {
             let db_path = dir.join("areyoufocused.db");
             let conn = db::open_database(&db_path).map_err(|e| format!("open database: {e}"))?;
             app.manage(AppState { db: Mutex::new(conn) });
+
+            let handle = app.handle().clone();
+            let notifier = Arc::from(platform::current_notifier());
+            scheduler::spawn_ping_loop(handle, notifier);
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![commands::submit_capture])

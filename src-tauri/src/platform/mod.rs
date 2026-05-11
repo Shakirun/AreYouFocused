@@ -9,7 +9,6 @@ pub trait PingNotifier: Send + Sync + 'static {
     fn notify_ping_due(&self, app: &AppHandle) -> Result<(), AppError>;
 }
 
-#[allow(dead_code)]
 pub fn current_notifier() -> Box<dyn PingNotifier> {
     #[cfg(target_os = "windows")]
     {
