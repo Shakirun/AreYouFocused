@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Default capability for dev",
   "windows": ["capture"],
-  "permissions": ["core:default", "notification:default"]
+  "permissions": ["core:default"]
 }

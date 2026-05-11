@@ -41,17 +41,6 @@ fn emit_ping_due(handle: &AppHandle) {
     }
 }
 
-/// Bring the capture window forward so the user can answer after a ping.
-fn focus_capture_window(handle: &AppHandle) {
-    let Some(win) = handle.get_webview_window("capture") else {
-        tracing::debug!("scheduler: no window labeled capture");
-        return;
-    };
-    let _ = win.unminimize();
-    let _ = win.show();
-    let _ = win.set_focus();
-}
-
 pub fn spawn_ping_loop(handle: AppHandle, notifier: Arc<dyn PingNotifier>) {
     let dev_secs = dev_ping_secs();
     if let Some(s) = dev_secs {
@@ -89,7 +78,6 @@ pub fn spawn_ping_loop(handle: AppHandle, notifier: Arc<dyn PingNotifier>) {
                 tracing::warn!("scheduler: notify: {e}");
             }
             emit_ping_due(&handle);
-            focus_capture_window(&handle);
 
             if let Some(dev_s) = dev_secs {
                 let resched: Result<(), AppError> = (|| {

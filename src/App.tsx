@@ -162,6 +162,10 @@ export default function App() {
           What are you doing?
         </h1>
         <p className="text-sm text-ink/70">Quick capture — honest answer.</p>
+        <p className="text-xs text-ink/50">
+          Closing the window hides it to the system tray; click the tray icon,
+          use the menu, or tap the ping notification to show it again.
+        </p>
         {lastPingAt ? (
           <p className="text-xs text-ink/55" aria-live="polite">
             Last ping at {lastPingAt}
