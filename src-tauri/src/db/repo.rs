@@ -119,6 +119,25 @@ pub fn persist_capture<R: Rng + ?Sized>(
     Ok(())
 }
 
+/// Latest captures first. `limit` is clamped to **1..=50** for predictable UI cost.
+pub fn query_recent_captures(
+    conn: &Connection,
+    limit: u32,
+) -> rusqlite::Result<Vec<(String, i64)>> {
+    let lim = (limit as i64).clamp(1, 50);
+    let mut stmt = conn.prepare(
+        "SELECT body, created_at_unix FROM captures ORDER BY created_at_unix DESC LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(params![lim], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,5 +239,28 @@ mod tests {
         assert!(next > now);
         assert!(next <= now + 10 * 60 + 1);
         assert!(next >= now + 5 * 60);
+    }
+
+    #[test]
+    fn query_recent_captures_newest_first() {
+        let conn = open_memory().expect("db");
+        let mut rng = StdRng::seed_from_u64(99);
+        persist_capture(&conn, "first", 100, &mut rng).expect("a");
+        persist_capture(&conn, "second", 200, &mut rng).expect("b");
+        let list = query_recent_captures(&conn, 10).expect("list");
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].0, "second");
+        assert_eq!(list[1].0, "first");
+    }
+
+    #[test]
+    fn query_recent_captures_respects_limit_cap() {
+        let conn = open_memory().expect("db");
+        let mut rng = StdRng::seed_from_u64(5);
+        for i in 0..60 {
+            persist_capture(&conn, &format!("x{i}"), 1_000 + i as i64, &mut rng).expect("p");
+        }
+        let list = query_recent_captures(&conn, 999).expect("list");
+        assert_eq!(list.len(), 50);
     }
 }
