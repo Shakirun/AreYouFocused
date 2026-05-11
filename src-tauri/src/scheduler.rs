@@ -98,7 +98,8 @@ pub fn spawn_ping_loop(handle: AppHandle, notifier: Arc<dyn PingNotifier>) {
                     let conn = &mut *db;
                     let mut rng = rand::thread_rng();
                     let now = unix_now();
-                    let (min_m, max_m) = repo::ping_min_max_minutes(conn).map_err(AppError::from)?;
+                    let (min_m, max_m) =
+                        repo::ping_min_max_minutes(conn).map_err(AppError::from)?;
                     let nxt = ping_plan::next_ping_after(now, min_m, max_m, &mut rng);
                     repo::set_next_ping_at_unix(conn, nxt).map_err(AppError::from)?;
                     Ok(())

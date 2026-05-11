@@ -28,7 +28,9 @@ pub fn run() {
             std::fs::create_dir_all(&dir).map_err(|e| format!("create app data dir: {e}"))?;
             let db_path = dir.join("areyoufocused.db");
             let conn = db::open_database(&db_path).map_err(|e| format!("open database: {e}"))?;
-            app.manage(AppState { db: Mutex::new(conn) });
+            app.manage(AppState {
+                db: Mutex::new(conn),
+            });
 
             let handle = app.handle().clone();
             let notifier = Arc::from(platform::current_notifier());
@@ -36,7 +38,10 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![commands::submit_capture])
+        .invoke_handler(tauri::generate_handler![
+            commands::submit_capture,
+            commands::get_scheduler_status,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

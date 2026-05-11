@@ -1,5 +1,21 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
+
+type SchedulerStatus = {
+  nextPingAtUnix: number | null;
+  pingMinMinutes: number;
+  pingMaxMinutes: number;
+};
+
+function formatNextPing(unix: number | null): string {
+  if (unix == null) {
+    return "Next ping: not scheduled yet.";
+  }
+  return `Next ping around ${new Date(unix * 1000).toLocaleString(undefined, {
+    dateStyle: "short",
+    timeStyle: "medium",
+  })}`;
+}
 
 /** Quick-capture shell. All user-facing strings are English until i18n (see /I18N.md). */
 export default function App() {
@@ -8,6 +24,25 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [lastPingAt, setLastPingAt] = useState<string | null>(null);
+  const [schedulerLine, setSchedulerLine] = useState<string | null>(null);
+  const [intervalLine, setIntervalLine] = useState<string | null>(null);
+
+  const refreshSchedulerStatus = useCallback(async () => {
+    try {
+      const s = await invoke<SchedulerStatus>("get_scheduler_status");
+      setSchedulerLine(formatNextPing(s.nextPingAtUnix));
+      setIntervalLine(
+        `Random interval: ${s.pingMinMinutes}–${s.pingMaxMinutes} min`,
+      );
+    } catch {
+      setSchedulerLine(null);
+      setIntervalLine(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshSchedulerStatus();
+  }, [refreshSchedulerStatus]);
 
   useEffect(() => {
     let cancelled = false;
@@ -25,6 +60,7 @@ export default function App() {
               second: "2-digit",
             }),
           );
+          void refreshSchedulerStatus();
         });
       } catch {
         // `npm run dev` without Tauri — no event bridge.
@@ -35,7 +71,7 @@ export default function App() {
       cancelled = true;
       unlisten?.();
     };
-  }, []);
+  }, [refreshSchedulerStatus]);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -49,6 +85,7 @@ export default function App() {
     try {
       await invoke("submit_capture", { text: trimmed });
       setText("");
+      void refreshSchedulerStatus();
     } catch (err) {
       setError(String(err));
     } finally {
@@ -66,6 +103,16 @@ export default function App() {
         {lastPingAt ? (
           <p className="text-xs text-ink/55" aria-live="polite">
             Last ping at {lastPingAt}
+          </p>
+        ) : null}
+        {schedulerLine ? (
+          <p className="text-xs text-ink/55" aria-live="polite">
+            {schedulerLine}
+          </p>
+        ) : null}
+        {intervalLine ? (
+          <p className="text-xs text-ink/45" aria-live="polite">
+            {intervalLine}
           </p>
         ) : null}
       </header>
