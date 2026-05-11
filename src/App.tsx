@@ -1,5 +1,6 @@
 import { useId, useState } from "react";
 
+/** Quick-capture shell. All user-facing strings are English until i18n (see /I18N.md). */
 export default function App() {
   const labelId = useId();
   const [text, setText] = useState("");

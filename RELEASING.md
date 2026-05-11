@@ -1,54 +1,162 @@
-# Ветки и релизы
+# Branching and releases
 
-## Модель
+## Model
 
-| Ветка | Назначение | Версия в `package.json` |
-|--------|------------|-------------------------|
-| **`main`** | Стабильные релизы, только через merge из `develop` (MR) | `0.x.y` без суффикса |
-| **`develop`** | Интеграция фич, нестабильная линия | `0.x.y-dev.N` (см. ниже) |
-| **`feature/*`** | Ответвления от `develop`, MR обратно в `develop` | не меняют глобальную политику версий |
+| Branch | Purpose | `package.json` version |
+|--------|-----------|-------------------------|
+| **`main`** | Stable releases; merges from `develop` only (via MR) | `0.x.y` (no prerelease suffix) |
+| **`develop`** | Feature integration; unstable line | `0.x.y-dev.N` (see below) |
+| **`feature/*`** | Branch from `develop`, MR back into `develop` | No global version policy change |
 
-Фичи **не** пушатся напрямую в `main`. Поток: `feature/...` → **`develop`** → по готовности релиза **`develop` → `main`** одним MR с описанием релиза.
+Features **must not** be pushed straight to `main`. Flow: `feature/...` → **`develop`** → when ready for a release, one MR **`develop` → `main`** with a written release summary.
 
-## Ежедневная работа
+## Day-to-day
 
-1. От `develop`: `git fetch origin && git checkout develop && git pull`.
-2. Создать ветку: `git checkout -b feature/short-name`.
-3. Коммиты по TDD, пуш: `git push -u origin feature/short-name`.
-4. Открыть **MR в `develop`**, дождаться ревью/CI, merge.
+1. From `develop`: `git fetch origin && git checkout develop && git pull`.
+2. Create a branch: `git checkout -b feature/short-name`.
+3. Commit with TDD, push: `git push -u origin feature/short-name`.
+4. Open an **MR into `develop`**, wait for review/CI, merge.
 
-При необходимости поднять нестабильный счётчик на `develop` после крупных вливок: отдельный коммит `chore: bump dev pre-release` (`0.2.0-dev.0` → `0.2.0-dev.1`).
+To bump the unstable counter on `develop` after large merges: a separate commit `chore: bump dev pre-release` (e.g. `0.2.0-dev.0` → `0.2.0-dev.1`).
 
-## Релиз в `main`
+## Release to `main`
 
-Когда на `develop` набрано достаточно для релиза:
+When `develop` has enough for a release:
 
-1. Убедиться, что `develop` зелёный (тесты, сборка).
-2. Создать **MR `develop` → `main`** (не squash всей истории develop в один коммит без нужды — предпочтительно merge commit или squash по политике команды).
-3. В описании MR использовать шаблон **«Release → main»** (`.github/PULL_REQUEST_TEMPLATE/release_to_main.md`): перечислить **что вошло в релиз**, версию, риски, проверки.
-4. В той же ветке релиза (или follow-up сразу после merge в `main`): выставить в `package.json` **стабильную** версию `0.x.y`, тег `v0.x.y` по желанию.
-5. После merge в `main`: смержить или ребейзнуть `main` обратно в `develop`, чтобы `develop` не отставала; на `develop` снова поднять dev-версию под следующий цикл (`0.(x+1).0-dev.0`).
+1. Ensure `develop` is green (tests, build).
+2. Open an **MR `develop` → `main`** (prefer merge commit or squash per team policy; avoid squashing all of `develop` history into one commit unless intentional).
+3. In the MR body, use the **“Release → main”** template (`.github/PULL_REQUEST_TEMPLATE/release_to_main.md`): list **what ships**, version, risks, verification.
+4. In the same release branch (or a follow-up right after merge to `main`): set **`package.json`** to a **stable** `0.x.y`, tag `v0.x.y` if you use tags.
+5. After merge to `main`: merge or rebase `main` back into `develop` so `develop` does not fall behind; bump the dev version on `develop` for the next cycle (`0.(x+1).0-dev.0`).
 
-## Защита веток на GitHub
+## Branch protection (GitHub)
 
-В **Settings → Branches → Branch protection rules** (или **Rulesets**):
+In **Settings → Branches → Branch protection rules** (or **Rulesets**):
 
 ### `main`
 
 - Require a pull request before merging.
-- Require approvals (минимум 1, если работаете не один — настроить под команду).
-- **Do not allow bypass** для админов, если нужна строгость.
-- Restrict who can push: никто напрямую (только через MR).
-- Опционально: required status checks.
+- Require approvals (e.g. minimum 1 when working with others — tune for solo vs team).
+- **Do not allow bypass** for admins if you want strict enforcement.
+- Restrict who can push: no direct pushes (MR only).
+- Optional: required status checks.
 
 ### `develop`
 
-- Require a pull request before merging (фичи только через MR).
-- Разрешить прямой push только если осознанно нужен «только владелец» — по умолчанию лучше тоже только через MR.
-- Запретить force-push и удаление ветки.
+- Require a pull request before merging (features via MR only).
+- Allow direct push only if you deliberately want “owner only” hotfixes — default is MR-only as well.
+- Disallow force-push and branch deletion.
 
-Точные переключатели зависят от UI GitHub; при использовании **Rulesets** объедините правила по префиксам `main` и `develop`.
+Exact toggles depend on the GitHub UI; with **Rulesets**, combine rules for the `main` and `develop` name patterns.
 
-## CLI (опционально)
+## GitHub Rulesets — solo maintainer (exact setup)
 
-С `gh` и правами на репозиторий можно настраивать правила через API; для большинства достаточно UI выше.
+Use **two rulesets** so you keep the `develop` → `main` flow without a second human approver. **Required approvals = 0** still forces a **PR + merge** (audit trail) while allowing self-merge.
+
+### Ruleset A — `main` (release line)
+
+| Field | Value |
+|--------|--------|
+| **Ruleset name** | `AreYouFocused — main (solo release gate)` |
+| **Enforcement status** | Active |
+| **Target branches** | Include by pattern: `main` (or “Default branch” if it is `main`) |
+| **Bypass list** | Empty — *do not* add repository admin bypass if you want the same discipline as a team; add **yourself** (or Repository admins) only if you want emergency direct pushes without PR. |
+
+**Branch rules**
+
+1. **Restrict deletions** — ON  
+2. **Restrict force pushes** — ON  
+3. **Require a pull request before merging** — ON  
+   - **Required approvals:** `0`  
+   - **Dismiss stale pull request approvals when new commits are pushed:** optional (OFF is simpler for solo)  
+   - **Require review from Code Owners:** OFF  
+   - **Require approval of the most recent reviewable push:** OFF  
+4. **Require linear history:** OFF (unless you explicitly want rebased linear `main`; merge commits are fine for `develop` → `main`)  
+5. **Require deployments / status checks / signed commits:** OFF until CI exists; add **required status checks** when `npm run build` (or similar) is on PRs.
+
+### Ruleset B — `develop` (integration line)
+
+| Field | Value |
+|--------|--------|
+| **Ruleset name** | `AreYouFocused — develop (solo integration)` |
+| **Enforcement status** | Active |
+| **Target branches** | Include by pattern: `develop` |
+| **Bypass list** | Optional: **Repository admin** only, if you want rare direct commits to `develop` without a PR. Otherwise empty. |
+
+**Branch rules**
+
+1. **Restrict deletions** — ON  
+2. **Restrict force pushes** — ON  
+3. **Require a pull request before merging** — ON  
+   - **Required approvals:** `0`  
+4. Same optional extras as on `main` when CI appears.
+
+### Import JSON (API / “Import ruleset”)
+
+If you manage rules as code, create each ruleset via [REST: Create a repository ruleset](https://docs.github.com/en/rest/repos/rules#create-a-repository-ruleset) or paste JSON where the UI supports import. Replace `YOUR_ORG_OR_USER` / repo name if needed; `bypass_actor_id` is your numeric user id — **omit `bypass_actors`** for strict solo (no bypass).
+
+**`main` (strict, no bypass):**
+
+```json
+{
+  "name": "AreYouFocused — main (solo release gate)",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "exclude": [],
+      "include": ["refs/heads/main"]
+    }
+  },
+  "rules": [
+    { "type": "deletion" },
+    { "type": "non_fast_forward" },
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": false,
+        "require_code_owner_reviews": false,
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": false
+      }
+    }
+  ],
+  "bypass_actors": []
+}
+```
+
+**`develop` (strict, no bypass):**
+
+```json
+{
+  "name": "AreYouFocused — develop (solo integration)",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "exclude": [],
+      "include": ["refs/heads/develop"]
+    }
+  },
+  "rules": [
+    { "type": "deletion" },
+    { "type": "non_fast_forward" },
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": false,
+        "require_code_owner_reviews": false,
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": false
+      }
+    }
+  ],
+  "bypass_actors": []
+}
+```
+
+## CLI (optional)
+
+With `gh` and repo permissions you can open PRs and configure rules via the API; for most teams the UI above is enough.

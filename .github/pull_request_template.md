@@ -1,12 +1,12 @@
-## Что сделано
+## Summary
 
 - 
 
-## Как проверено
+## How tested
 
 - [ ] `npm run build`
-- [ ] (после появления Tauri) `npm run tauri:build` / тесты
+- [ ] (when Tauri exists) `npm run tauri:build` / tests
 
-## Заметки
+## Notes
 
 - 
