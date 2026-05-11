@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 
 /** Quick-capture shell. All user-facing strings are English until i18n (see /I18N.md). */
 export default function App() {
@@ -7,6 +7,35 @@ export default function App() {
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [lastPingAt, setLastPingAt] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+
+    void (async () => {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        if (cancelled) return;
+        unlisten = await listen("ping-due", () => {
+          setLastPingAt(
+            new Date().toLocaleTimeString(undefined, {
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+            }),
+          );
+        });
+      } catch {
+        // `npm run dev` without Tauri — no event bridge.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -34,6 +63,11 @@ export default function App() {
           What are you doing?
         </h1>
         <p className="text-sm text-ink/70">Quick capture — honest answer.</p>
+        {lastPingAt ? (
+          <p className="text-xs text-ink/55" aria-live="polite">
+            Last ping at {lastPingAt}
+          </p>
+        ) : null}
       </header>
 
       <form onSubmit={onSubmit} className="flex flex-col gap-3">
