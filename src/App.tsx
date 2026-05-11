@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useId, useState } from "react";
 
+import { useFitWindowHeight } from "./useFitWindowHeight";
+
 type SchedulerStatus = {
   nextPingAtUnix: number | null;
   pingMinMinutes: number;
@@ -29,6 +31,8 @@ function formatNextPing(unix: number | null): string {
 
 /** Quick-capture shell. All user-facing strings are English until i18n (see /I18N.md). */
 export default function App() {
+  useFitWindowHeight();
+
   const labelId = useId();
   const minId = useId();
   const maxId = useId();
@@ -174,7 +178,7 @@ export default function App() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-md flex-col gap-6 px-5 py-8">
+    <main className="mx-auto flex max-w-md flex-col gap-5 px-5 py-7">
       <header className="space-y-1">
         <h1 className="text-lg font-semibold tracking-tight text-ink">
           What are you doing?
