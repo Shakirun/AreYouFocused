@@ -1,10 +1,32 @@
 use super::PingNotifier;
+use crate::db::repo;
 use crate::error::AppError;
 use crate::window_util;
-use tauri::AppHandle;
+use crate::AppState;
+use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_winrt_notification::{Duration, Toast};
 
+/// Toast button `arguments`; must match `add_button` second parameter.
+const TOAST_ACTION_SNOOZE: &str = "snooze";
+
 pub struct WindowsNotifier;
+
+fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn snooze_from_toast(app: &AppHandle) -> Result<(), AppError> {
+    let state = app.state::<AppState>();
+    let mut db = state.db.lock().unwrap_or_else(|p| p.into_inner());
+    let conn = &mut *db;
+    repo::snooze_next_ping(conn, unix_now())?;
+    let _ = app.emit("scheduler-updated", ());
+    Ok(())
+}
 
 fn toast_app_id(app: &AppHandle) -> String {
     let identifier = app.config().identifier.clone();
@@ -34,13 +56,28 @@ impl PingNotifier for WindowsNotifier {
             .title("AreYouFocused")
             .text2("What are you doing right now?")
             .duration(Duration::Short)
-            .on_activated(move |_action| {
-                let h = app_for_activation.clone();
-                let h2 = h.clone();
-                if let Err(e) = h.run_on_main_thread(move || {
-                    window_util::show_and_focus_capture(&h2);
-                }) {
-                    tracing::warn!("toast activation: run_on_main_thread failed: {e}");
+            .add_button("Snooze 10 min", TOAST_ACTION_SNOOZE)
+            .on_activated(move |action| {
+                let app = app_for_activation.clone();
+                match action.as_deref() {
+                    Some(TOAST_ACTION_SNOOZE) => {
+                        let app_run = app.clone();
+                        if let Err(e) = app.run_on_main_thread(move || {
+                            if let Err(e) = snooze_from_toast(&app_run) {
+                                tracing::warn!("toast snooze: {e}");
+                            }
+                        }) {
+                            tracing::warn!("toast activation: run_on_main_thread failed: {e}");
+                        }
+                    }
+                    _ => {
+                        let h2 = app.clone();
+                        if let Err(e) = app.run_on_main_thread(move || {
+                            window_util::show_and_focus_capture(&h2);
+                        }) {
+                            tracing::warn!("toast activation: run_on_main_thread failed: {e}");
+                        }
+                    }
                 }
                 Ok(())
             })

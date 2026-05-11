@@ -84,7 +84,7 @@ export default function App() {
       try {
         const { listen } = await import("@tauri-apps/api/event");
         if (cancelled) return;
-        unlisten = await listen("ping-due", () => {
+        const offPingDue = await listen("ping-due", () => {
           setLastPingAt(
             new Date().toLocaleTimeString(undefined, {
               hour: "2-digit",
@@ -94,6 +94,13 @@ export default function App() {
           );
           void refreshSchedulerStatus();
         });
+        const offScheduler = await listen("scheduler-updated", () => {
+          void refreshSchedulerStatus();
+        });
+        unlisten = () => {
+          offPingDue();
+          offScheduler();
+        };
       } catch {
         // `npm run dev` without Tauri — no event bridge.
       }
