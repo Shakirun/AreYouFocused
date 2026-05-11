@@ -14,6 +14,13 @@ pub struct SchedulerStatus {
     pub ping_max_minutes: i64,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureRow {
+    pub body: String,
+    pub created_at_unix: i64,
+}
+
 #[tauri::command]
 pub fn get_scheduler_status(state: State<'_, AppState>) -> Result<SchedulerStatus, AppError> {
     let mut db = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -56,4 +63,22 @@ pub fn submit_capture(state: State<'_, AppState>, text: String) -> Result<(), Ap
     let mut db = state.db.lock().unwrap_or_else(|e| e.into_inner());
     let conn = &mut *db;
     repo::persist_capture(conn, &text, unix_now(), &mut rand::thread_rng())
+}
+
+#[tauri::command]
+pub fn list_recent_captures(
+    state: State<'_, AppState>,
+    limit: Option<u32>,
+) -> Result<Vec<CaptureRow>, AppError> {
+    let lim = limit.unwrap_or(15).clamp(1, 50);
+    let mut db = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = &mut *db;
+    let rows = repo::query_recent_captures(conn, lim)?;
+    Ok(rows
+        .into_iter()
+        .map(|(body, created_at_unix)| CaptureRow {
+            body,
+            created_at_unix,
+        })
+        .collect())
 }

@@ -7,6 +7,13 @@ type SchedulerStatus = {
   pingMaxMinutes: number;
 };
 
+type CaptureRow = {
+  body: string;
+  createdAtUnix: number;
+};
+
+const RECENT_CAPTURES_LIMIT = 15;
+
 /** Matches `repo::PING_MAX_MINUTES_CAP` (one week). */
 const PING_MAX_MINUTES_CAP = 10_080;
 
@@ -35,6 +42,18 @@ export default function App() {
   const [boundsMax, setBoundsMax] = useState(120);
   const [intervalError, setIntervalError] = useState<string | null>(null);
   const [applyingInterval, setApplyingInterval] = useState(false);
+  const [recentCaptures, setRecentCaptures] = useState<CaptureRow[]>([]);
+
+  const refreshRecentCaptures = useCallback(async () => {
+    try {
+      const rows = await invoke<CaptureRow[]>("list_recent_captures", {
+        limit: RECENT_CAPTURES_LIMIT,
+      });
+      setRecentCaptures(rows);
+    } catch {
+      setRecentCaptures([]);
+    }
+  }, []);
 
   const refreshSchedulerStatus = useCallback(async () => {
     try {
@@ -53,7 +72,8 @@ export default function App() {
 
   useEffect(() => {
     void refreshSchedulerStatus();
-  }, [refreshSchedulerStatus]);
+    void refreshRecentCaptures();
+  }, [refreshSchedulerStatus, refreshRecentCaptures]);
 
   useEffect(() => {
     let cancelled = false;
@@ -127,6 +147,7 @@ export default function App() {
       await invoke("submit_capture", { text: trimmed });
       setText("");
       void refreshSchedulerStatus();
+      void refreshRecentCaptures();
     } catch (err) {
       setError(String(err));
     } finally {
@@ -253,6 +274,37 @@ export default function App() {
           {error ?? ""}
         </div>
       </form>
+
+      <details className="rounded-lg border border-brand/20 bg-white/80 px-3 py-2 shadow-sm open:pb-3">
+        <summary className="cursor-pointer select-none text-sm font-medium text-ink">
+          Recent answers ({recentCaptures.length})
+        </summary>
+        {recentCaptures.length === 0 ? (
+          <p className="mt-3 text-sm text-ink/60">Nothing saved yet.</p>
+        ) : (
+          <ul
+            className="mt-3 flex max-h-64 flex-col gap-2 overflow-y-auto text-sm"
+            aria-label="Recent capture entries"
+          >
+            {recentCaptures.map((row, i) => (
+              <li
+                key={`${row.createdAtUnix}-${i}`}
+                className="rounded-md border border-brand/15 bg-white px-2.5 py-2"
+              >
+                <p className="line-clamp-4 whitespace-pre-wrap break-words text-ink">
+                  {row.body}
+                </p>
+                <p className="mt-1 text-xs text-ink/50">
+                  {new Date(row.createdAtUnix * 1000).toLocaleString(undefined, {
+                    dateStyle: "short",
+                    timeStyle: "short",
+                  })}
+                </p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </details>
     </main>
   );
 }
