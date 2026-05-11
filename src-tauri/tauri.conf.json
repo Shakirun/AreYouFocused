@@ -25,9 +25,25 @@
     }
   },
   "bundle": {
-    "active": false,
-    "targets": "all",
-    "icon": []
+    "active": true,
+    "targets": ["nsis"],
+    "shortDescription": "Honest random-ping capture — what are you doing right now?",
+    "longDescription": "AreYouFocused pings you at random intervals so you capture what you are actually doing. Local-first SQLite, system tray, optional Windows toast actions.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
   },
   "plugins": {}
 }
