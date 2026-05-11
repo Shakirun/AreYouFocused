@@ -11,9 +11,3 @@ pub fn show_and_focus_capture<R: Runtime>(app: &AppHandle<R>) {
     let _ = win.show();
     let _ = win.set_focus();
 }
-
-pub fn hide_capture<R: Runtime>(app: &AppHandle<R>) {
-    if let Some(win) = app.get_webview_window("capture") {
-        let _ = win.hide();
-    }
-}
