@@ -12,6 +12,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [[bin]]
 name = "are-you-focused"
 path = "src/main.rs"
+# Lib holds all unit tests; main is a thin shim — skip the empty binary test harness.
+test = false
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

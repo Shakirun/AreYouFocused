@@ -11,7 +11,7 @@ Desktop-first **random-ping** productivity tracker (WhatNow-style): honest, loca
 - **Desktop (Tauri 2):** install **Rust** (stable via [rustup](https://rustup.rs/)), on Windows also **MSVC Build Tools**. The WebView2 **Evergreen** runtime is standard on recent Windows 10/11; if the webview fails to start, install or repair from [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/consumer/).
   - `npm run tauri:dev` — run the app with the Vite dev server.
   - `npm run tauri:build` — production build (bundling is currently off in `src-tauri/tauri.conf.json` until icons and installer work are done).
-  - Rust: `cd src-tauri` then `cargo test` / `cargo check`.
+  - Rust: `cd src-tauri` then `cargo test` / `cargo check`. Unit tests live in the **library** crate; the `are-you-focused` binary is only a thin `main` shim, so its `[[bin]]` has `test = false` and Cargo will not print a second “0 tests” harness for it.
 - **Cursor + 21st.dev:** after edits to `src/App.tsx`, an optional hook injects a follow-up to run `21st_magic_component_builder` — see `devtools/cursor/README.md` (`.cursor/` is local-only).
 
 ## Git branches
