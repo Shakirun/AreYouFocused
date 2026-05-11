@@ -36,6 +36,15 @@ pub fn snooze_ping(state: State<'_, AppState>) -> Result<SchedulerStatus, AppErr
     read_scheduler_status(conn)
 }
 
+/// Saves another capture with the same text as the most recent entry (for toast/quick actions).
+#[tauri::command]
+pub fn repeat_last_capture(state: State<'_, AppState>) -> Result<SchedulerStatus, AppError> {
+    let mut db = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = &mut *db;
+    repo::persist_repeat_latest(conn, unix_now(), &mut rand::thread_rng())?;
+    read_scheduler_status(conn)
+}
+
 #[tauri::command]
 pub fn update_ping_interval(
     state: State<'_, AppState>,

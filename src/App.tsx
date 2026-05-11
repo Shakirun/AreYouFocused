@@ -29,6 +29,19 @@ function formatNextPing(unix: number | null): string {
   })}`;
 }
 
+/** Matches `still_button_label` in `src-tauri/src/platform/windows.rs` (toast actions). */
+function formatStillButtonLabel(body: string): string {
+  const PREFIX = "Still: ";
+  const MAX_CHARS = 42;
+  const t = body.trim();
+  if (!t) return "Still";
+  const chars = Array.from(t);
+  const prefixLen = Array.from(PREFIX).length;
+  const avail = Math.max(0, MAX_CHARS - prefixLen);
+  if (chars.length <= avail) return PREFIX + t;
+  return PREFIX + chars.slice(0, Math.max(0, avail - 1)).join("") + "…";
+}
+
 /** Quick-capture shell. All user-facing strings are English until i18n (see /I18N.md). */
 export default function App() {
   useFitWindowHeight();
@@ -47,7 +60,11 @@ export default function App() {
   const [intervalError, setIntervalError] = useState<string | null>(null);
   const [applyingInterval, setApplyingInterval] = useState(false);
   const [snoozing, setSnoozing] = useState(false);
+  const [repeating, setRepeating] = useState(false);
   const [recentCaptures, setRecentCaptures] = useState<CaptureRow[]>([]);
+
+  const latestCaptureBody = recentCaptures[0]?.body?.trim() ?? "";
+  const canRepeatLast = latestCaptureBody.length > 0;
 
   const refreshRecentCaptures = useCallback(async () => {
     try {
@@ -100,6 +117,7 @@ export default function App() {
         });
         const offScheduler = await listen("scheduler-updated", () => {
           void refreshSchedulerStatus();
+          void refreshRecentCaptures();
         });
         unlisten = () => {
           offPingDue();
@@ -114,7 +132,7 @@ export default function App() {
       cancelled = true;
       unlisten?.();
     };
-  }, [refreshSchedulerStatus]);
+  }, [refreshSchedulerStatus, refreshRecentCaptures]);
 
   async function onSnooze() {
     setSnoozing(true);
@@ -123,6 +141,20 @@ export default function App() {
       void refreshSchedulerStatus();
     } finally {
       setSnoozing(false);
+    }
+  }
+
+  async function onRepeatLast() {
+    setError(null);
+    setRepeating(true);
+    try {
+      await invoke<SchedulerStatus>("repeat_last_capture");
+      void refreshSchedulerStatus();
+      void refreshRecentCaptures();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setRepeating(false);
     }
   }
 
@@ -291,7 +323,7 @@ export default function App() {
             value={text}
             onChange={(e) => setText(e.target.value)}
             rows={5}
-            disabled={saving}
+            disabled={saving || repeating}
             placeholder="Honest answer…"
             className="w-full resize-y rounded-lg border border-brand/25 bg-white px-3 py-2.5 text-sm text-ink shadow-sm outline-none ring-brand/20 transition-shadow duration-interaction placeholder:text-ink/40 focus:border-brand focus:ring-[3px] disabled:cursor-not-allowed disabled:opacity-60"
             aria-invalid={error ? true : undefined}
@@ -299,13 +331,30 @@ export default function App() {
           />
         </div>
 
-        <button
-          type="submit"
-          disabled={saving}
-          className="cursor-pointer rounded-lg bg-action px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors duration-interaction hover:bg-action-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-action motion-safe:active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {saving ? "Saving…" : "Save"}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="submit"
+            disabled={saving || repeating}
+            className="cursor-pointer rounded-lg bg-action px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors duration-interaction hover:bg-action-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-action motion-safe:active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {saving ? "Saving…" : "Save"}
+          </button>
+          <button
+            type="button"
+            onClick={() => void onRepeatLast()}
+            disabled={saving || repeating || !canRepeatLast}
+            title={
+              canRepeatLast
+                ? "Log the same answer as your last save (no need to retype)."
+                : "Save an answer once to enable this."
+            }
+            className="cursor-pointer rounded-lg border border-brand/35 bg-white/90 px-4 py-2.5 text-sm font-medium text-ink/90 shadow-sm transition-colors duration-interaction hover:bg-brand/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {repeating
+              ? "Saving…"
+              : formatStillButtonLabel(latestCaptureBody)}
+          </button>
+        </div>
 
         <div
           id={`${labelId}-err`}

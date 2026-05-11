@@ -7,6 +7,8 @@ pub enum AppError {
     Db(#[from] rusqlite::Error),
     #[error("capture text must not be empty")]
     EmptyCapture,
+    #[error("no previous capture to repeat")]
+    NoPriorCapture,
     #[error("ping interval: {0}")]
     InvalidPingBounds(String),
     #[error("notification: {0}")]

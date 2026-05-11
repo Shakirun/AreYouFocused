@@ -3,7 +3,7 @@
 use crate::domain::ping_plan;
 use crate::error::AppError;
 use rand::Rng;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 pub fn get_next_ping_at_unix(conn: &Connection) -> rusqlite::Result<Option<i64>> {
     conn.query_row(
@@ -134,6 +134,30 @@ pub fn reschedule_next_ping_from_now<R: Rng + ?Sized>(
     Ok(())
 }
 
+pub fn latest_capture_body(conn: &Connection) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT body FROM captures ORDER BY created_at_unix DESC LIMIT 1",
+        [],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+}
+
+/// Records another capture with the **same body** as the latest row (same timestamp semantics as [`persist_capture`]).
+pub fn persist_repeat_latest<R: Rng + ?Sized>(
+    conn: &Connection,
+    now_unix: i64,
+    rng: &mut R,
+) -> Result<(), AppError> {
+    let Some(text) = latest_capture_body(conn)? else {
+        return Err(AppError::NoPriorCapture);
+    };
+    if text.trim().is_empty() {
+        return Err(AppError::NoPriorCapture);
+    }
+    persist_capture(conn, &text, now_unix, rng)
+}
+
 pub fn persist_capture<R: Rng + ?Sized>(
     conn: &Connection,
     text: &str,
@@ -178,6 +202,7 @@ pub fn query_recent_captures(
 mod tests {
     use super::*;
     use crate::db::open_memory;
+    use crate::error::AppError;
     use rand::rngs::StdRng;
     use rand::SeedableRng;
 
@@ -337,5 +362,35 @@ mod tests {
         }
         let list = query_recent_captures(&conn, 999).expect("list");
         assert_eq!(list.len(), 50);
+    }
+
+    #[test]
+    fn latest_capture_body_newest() {
+        let conn = open_memory().expect("db");
+        let mut rng = StdRng::seed_from_u64(3);
+        persist_capture(&conn, "older", 100, &mut rng).expect("a");
+        persist_capture(&conn, "newer", 200, &mut rng).expect("b");
+        assert_eq!(
+            latest_capture_body(&conn).expect("q"),
+            Some("newer".to_string())
+        );
+    }
+
+    #[test]
+    fn persist_repeat_latest_inserts_copy_and_err_when_empty() {
+        let conn = open_memory().expect("db");
+        let mut rng = StdRng::seed_from_u64(8);
+        let err = persist_repeat_latest(&conn, 500, &mut rng).unwrap_err();
+        assert!(matches!(err, AppError::NoPriorCapture));
+
+        persist_capture(&conn, "coding", 100, &mut rng).expect("first");
+        persist_repeat_latest(&conn, 600, &mut rng).expect("repeat");
+
+        let rows = query_recent_captures(&conn, 5).expect("list");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, "coding");
+        assert_eq!(rows[1].0, "coding");
+        assert_eq!(rows[0].1, 600);
+        assert_eq!(rows[1].1, 100);
     }
 }
