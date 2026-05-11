@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "hooks": {
+    "postToolUse": [
+      {
+        "command": "node scripts/cursor/after-app-tsx-21st.cjs",
+        "matcher": "Write|StrReplace"
+      }
+    ]
+  }
+}

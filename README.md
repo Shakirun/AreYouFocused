@@ -6,6 +6,7 @@ Desktop-first **random-ping** productivity tracker (WhatNow-style): honest, loca
 
 - **TDD only**: red → green → refactor; failing test before implementation (local rule pack under `.cursor/rules/`).
 - **Frontend:** Node 18+, `npm install`, `npm run dev` (Vite + React + **Tailwind**). Design tokens match ui-ux-pro-max design system (see `tailwind.config.js`).
+- **Cursor + 21st.dev:** after edits to `src/App.tsx`, optional hook injects a follow-up to run `21st_magic_component_builder` — see `devtools/cursor/README.md` (`.cursor/` is local-only).
 
 ## Agent / Cursor (local workspace only)
 
