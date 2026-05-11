@@ -146,7 +146,7 @@ vite.config.ts.timestamp-*
 src-tauri/target/
 src-tauri/gen/
 
-# Local only: Cursor config, MCP secrets, agent handbook, design/docs (solo dev).
+# Optional local-only: editor config, secrets, personal docs (not part of the shared source tree).
 .cursor
 docs
 AGENTS.md

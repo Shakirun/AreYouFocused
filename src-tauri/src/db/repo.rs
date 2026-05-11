@@ -5,6 +5,117 @@ use crate::error::AppError;
 use rand::Rng;
 use rusqlite::{params, Connection, OptionalExtension};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NextPingKind {
+    Standard,
+    PlannedCheck,
+}
+
+impl NextPingKind {
+    pub fn from_db(s: &str) -> Self {
+        match s.trim() {
+            "planned_check" => NextPingKind::PlannedCheck,
+            _ => NextPingKind::Standard,
+        }
+    }
+
+    pub fn as_db(self) -> &'static str {
+        match self {
+            NextPingKind::Standard => "standard",
+            NextPingKind::PlannedCheck => "planned_check",
+        }
+    }
+}
+
+pub fn get_next_ping_kind(conn: &Connection) -> rusqlite::Result<NextPingKind> {
+    let s: String = conn.query_row(
+        "SELECT COALESCE(next_ping_kind, 'standard') FROM scheduler_state WHERE id = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(NextPingKind::from_db(&s))
+}
+
+fn set_next_ping_kind(conn: &Connection, kind: NextPingKind) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE scheduler_state SET next_ping_kind = ?1 WHERE id = 1",
+        params![kind.as_db()],
+    )?;
+    Ok(())
+}
+
+pub fn get_awaiting_followup(conn: &Connection) -> rusqlite::Result<bool> {
+    let v: i64 = conn.query_row(
+        "SELECT COALESCE(awaiting_followup, 0) FROM scheduler_state WHERE id = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(v != 0)
+}
+
+fn set_awaiting_followup(conn: &Connection, awaiting: bool) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE scheduler_state SET awaiting_followup = ?1 WHERE id = 1",
+        params![if awaiting { 1 } else { 0 }],
+    )?;
+    Ok(())
+}
+
+pub fn get_planned_check_subject(conn: &Connection) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT planned_check_subject FROM scheduler_state WHERE id = 1",
+        [],
+        |row| row.get::<_, Option<String>>(0),
+    )
+}
+
+fn set_planned_check_subject(conn: &Connection, subject: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE scheduler_state SET planned_check_subject = ?1 WHERE id = 1",
+        params![subject],
+    )?;
+    Ok(())
+}
+
+fn clear_planned_check_subject(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE scheduler_state SET planned_check_subject = NULL WHERE id = 1",
+        [],
+    )?;
+    Ok(())
+}
+
+pub fn validate_planned_duration_minutes(m: i64) -> Result<(), AppError> {
+    if m < 1 || m > PING_MAX_MINUTES_CAP {
+        return Err(AppError::InvalidPlannedDuration);
+    }
+    Ok(())
+}
+
+/// Rolls the next ping using the user's random min/max interval and marks it **standard**.
+pub fn schedule_random_next_ping<R: Rng + ?Sized>(
+    conn: &Connection,
+    now_unix: i64,
+    rng: &mut R,
+) -> Result<(), AppError> {
+    let (min_m, max_m) = ping_min_max_minutes(conn)?;
+    let next = ping_plan::next_ping_after(now_unix, min_m, max_m, rng);
+    set_next_ping_at_unix(conn, next)?;
+    set_next_ping_kind(conn, NextPingKind::Standard)?;
+    Ok(())
+}
+
+/// After a **planned_check** notification fires: wait for user reply + schedule the fallback random ping.
+pub fn apply_after_planned_check_ping<R: Rng + ?Sized>(
+    conn: &Connection,
+    now_unix: i64,
+    rng: &mut R,
+) -> Result<(), AppError> {
+    set_awaiting_followup(conn, true)?;
+    schedule_random_next_ping(conn, now_unix, rng)?;
+    Ok(())
+}
+
 pub fn get_next_ping_at_unix(conn: &Connection) -> rusqlite::Result<Option<i64>> {
     conn.query_row(
         "SELECT next_ping_at_unix FROM scheduler_state WHERE id = 1",
@@ -52,7 +163,10 @@ pub fn ensure_next_ping_scheduled<R: Rng + ?Sized>(
         Some(t) if t > now_unix => {
             let delta = t.saturating_sub(now_unix);
             let cap = max_valid_delay_secs(max_m);
-            if delta > cap && !approx_snooze_delay_secs(delta) {
+            let kind = get_next_ping_kind(conn)?;
+            let preserve_far_future =
+                approx_snooze_delay_secs(delta) || kind == NextPingKind::PlannedCheck;
+            if delta > cap && !preserve_far_future {
                 let next = ping_plan::next_ping_after(now_unix, min_m, max_m, rng);
                 set_next_ping_at_unix(conn, next)?;
                 Ok(next)
@@ -92,6 +206,9 @@ pub const SNOOZE_MINUTES: i64 = 10;
 pub fn snooze_next_ping(conn: &Connection, now_unix: i64) -> rusqlite::Result<i64> {
     let next = now_unix.saturating_add(SNOOZE_MINUTES * 60);
     set_next_ping_at_unix(conn, next)?;
+    set_next_ping_kind(conn, NextPingKind::Standard)?;
+    set_awaiting_followup(conn, false)?;
+    clear_planned_check_subject(conn)?;
     Ok(next)
 }
 
@@ -131,6 +248,9 @@ pub fn reschedule_next_ping_from_now<R: Rng + ?Sized>(
     let (min_m, max_m) = ping_min_max_minutes(conn)?;
     let next = ping_plan::next_ping_after(now_unix, min_m, max_m, rng);
     set_next_ping_at_unix(conn, next)?;
+    set_next_ping_kind(conn, NextPingKind::Standard)?;
+    set_awaiting_followup(conn, false)?;
+    clear_planned_check_subject(conn)?;
     Ok(())
 }
 
@@ -155,41 +275,150 @@ pub fn persist_repeat_latest<R: Rng + ?Sized>(
     if text.trim().is_empty() {
         return Err(AppError::NoPriorCapture);
     }
-    persist_capture(conn, &text, now_unix, rng)
+    let thread_root = latest_thread_root(conn)?.unwrap_or_else(|| text.clone());
+    persist_capture_with_root(conn, &text, now_unix, rng, None, thread_root)
 }
 
+/// `thread_root` groups follow-up segments so stacked duration charts stay consistent.
 pub fn persist_capture<R: Rng + ?Sized>(
     conn: &Connection,
     text: &str,
     now_unix: i64,
     rng: &mut R,
+    planned_duration_minutes: Option<i64>,
 ) -> Result<(), AppError> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Err(AppError::EmptyCapture);
     }
 
-    let (min_m, max_m) = ping_min_max_minutes(conn)?;
+    let awaiting = get_awaiting_followup(conn)?;
+    let thread_root = if awaiting {
+        get_planned_check_subject(conn)?
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| trimmed.to_string())
+    } else {
+        trimmed.to_string()
+    };
+
+    persist_capture_with_root(conn, text, now_unix, rng, planned_duration_minutes, thread_root)
+}
+
+fn persist_capture_with_root<R: Rng + ?Sized>(
+    conn: &Connection,
+    text: &str,
+    now_unix: i64,
+    rng: &mut R,
+    planned_duration_minutes: Option<i64>,
+    thread_root: String,
+) -> Result<(), AppError> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::EmptyCapture);
+    }
+
+    let awaiting = get_awaiting_followup(conn)?;
+
     conn.execute(
-        "INSERT INTO captures (body, created_at_unix) VALUES (?1, ?2)",
-        params![trimmed, now_unix],
+        "INSERT INTO captures (body, created_at_unix, duration_minutes, thread_root)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![
+            trimmed,
+            now_unix,
+            planned_duration_minutes,
+            thread_root
+        ],
     )?;
-    let next = ping_plan::next_ping_after(now_unix, min_m, max_m, rng);
-    set_next_ping_at_unix(conn, next)?;
+
+    if awaiting {
+        set_awaiting_followup(conn, false)?;
+        match planned_duration_minutes {
+            Some(d) => {
+                validate_planned_duration_minutes(d)?;
+                let next = now_unix.saturating_add(d.saturating_mul(60));
+                set_next_ping_at_unix(conn, next)?;
+                set_next_ping_kind(conn, NextPingKind::PlannedCheck)?;
+                set_planned_check_subject(conn, trimmed)?;
+            }
+            None => {
+                schedule_random_next_ping(conn, now_unix, rng)?;
+                clear_planned_check_subject(conn)?;
+            }
+        }
+        return Ok(());
+    }
+
+    match planned_duration_minutes {
+        Some(d) => {
+            validate_planned_duration_minutes(d)?;
+            let next = now_unix.saturating_add(d.saturating_mul(60));
+            set_next_ping_at_unix(conn, next)?;
+            set_next_ping_kind(conn, NextPingKind::PlannedCheck)?;
+            set_planned_check_subject(conn, trimmed)?;
+        }
+        None => {
+            schedule_random_next_ping(conn, now_unix, rng)?;
+            clear_planned_check_subject(conn)?;
+        }
+    }
     Ok(())
+}
+
+pub fn latest_thread_root(conn: &Connection) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT COALESCE(thread_root, body) FROM captures ORDER BY created_at_unix DESC LIMIT 1",
+        [],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
 }
 
 /// Latest captures first. `limit` is clamped to **1..=50** for predictable UI cost.
 pub fn query_recent_captures(
     conn: &Connection,
     limit: u32,
-) -> rusqlite::Result<Vec<(String, i64)>> {
+) -> rusqlite::Result<Vec<(String, i64, Option<i64>, String)>> {
     let lim = (limit as i64).clamp(1, 50);
     let mut stmt = conn.prepare(
-        "SELECT body, created_at_unix FROM captures ORDER BY created_at_unix DESC LIMIT ?1",
+        "SELECT body, created_at_unix, duration_minutes,
+                COALESCE(thread_root, body) AS tr
+         FROM captures ORDER BY created_at_unix DESC LIMIT ?1",
     )?;
     let rows = stmt.query_map(params![lim], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, Option<i64>>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+/// Aggregated logged minutes per activity thread (`thread_root`), since `since_unix` (inclusive).
+pub fn query_activity_digest(
+    conn: &Connection,
+    since_unix: i64,
+) -> rusqlite::Result<Vec<(String, i64, i64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT COALESCE(thread_root, body),
+                COALESCE(SUM(duration_minutes), 0),
+                COUNT(*)
+         FROM captures
+         WHERE created_at_unix >= ?1
+         GROUP BY COALESCE(thread_root, body)
+         ORDER BY 2 DESC, 1 COLLATE NOCASE ASC",
+    )?;
+    let rows = stmt.query_map(params![since_unix], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
     })?;
     let mut out = Vec::new();
     for r in rows {
@@ -244,7 +473,7 @@ mod tests {
     fn persist_capture_rejects_empty() {
         let conn = open_memory().expect("db");
         let mut rng = StdRng::seed_from_u64(7);
-        let err = persist_capture(&conn, "   ", 1_000, &mut rng).unwrap_err();
+        let err = persist_capture(&conn, "   ", 1_000, &mut rng, None).unwrap_err();
         assert!(matches!(err, AppError::EmptyCapture));
     }
 
@@ -253,7 +482,7 @@ mod tests {
         let conn = open_memory().expect("db");
         let mut rng = StdRng::seed_from_u64(42);
         let now = 10_000_i64;
-        persist_capture(&conn, "  working  ", now, &mut rng).expect("persist");
+        persist_capture(&conn, "  working  ", now, &mut rng, None).expect("persist");
 
         let body: String = conn
             .query_row("SELECT body FROM captures LIMIT 1", [], |row| row.get(0))
@@ -331,8 +560,8 @@ mod tests {
     fn query_recent_captures_newest_first() {
         let conn = open_memory().expect("db");
         let mut rng = StdRng::seed_from_u64(99);
-        persist_capture(&conn, "first", 100, &mut rng).expect("a");
-        persist_capture(&conn, "second", 200, &mut rng).expect("b");
+        persist_capture(&conn, "first", 100, &mut rng, None).expect("a");
+        persist_capture(&conn, "second", 200, &mut rng, None).expect("b");
         let list = query_recent_captures(&conn, 10).expect("list");
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].0, "second");
@@ -383,7 +612,7 @@ mod tests {
         let conn = open_memory().expect("db");
         let mut rng = StdRng::seed_from_u64(5);
         for i in 0..60 {
-            persist_capture(&conn, &format!("x{i}"), 1_000 + i as i64, &mut rng).expect("p");
+            persist_capture(&conn, &format!("x{i}"), 1_000 + i as i64, &mut rng, None).expect("p");
         }
         let list = query_recent_captures(&conn, 999).expect("list");
         assert_eq!(list.len(), 50);
@@ -393,8 +622,8 @@ mod tests {
     fn latest_capture_body_newest() {
         let conn = open_memory().expect("db");
         let mut rng = StdRng::seed_from_u64(3);
-        persist_capture(&conn, "older", 100, &mut rng).expect("a");
-        persist_capture(&conn, "newer", 200, &mut rng).expect("b");
+        persist_capture(&conn, "older", 100, &mut rng, None).expect("a");
+        persist_capture(&conn, "newer", 200, &mut rng, None).expect("b");
         assert_eq!(
             latest_capture_body(&conn).expect("q"),
             Some("newer".to_string())
@@ -408,7 +637,7 @@ mod tests {
         let err = persist_repeat_latest(&conn, 500, &mut rng).unwrap_err();
         assert!(matches!(err, AppError::NoPriorCapture));
 
-        persist_capture(&conn, "coding", 100, &mut rng).expect("first");
+        persist_capture(&conn, "coding", 100, &mut rng, None).expect("first");
         persist_repeat_latest(&conn, 600, &mut rng).expect("repeat");
 
         let rows = query_recent_captures(&conn, 5).expect("list");
@@ -423,15 +652,82 @@ mod tests {
     fn query_top_capture_bodies_by_frequency_orders_by_count() {
         let conn = open_memory().expect("db");
         let mut rng = StdRng::seed_from_u64(2);
-        persist_capture(&conn, "rare", 10, &mut rng).expect("r");
-        persist_capture(&conn, "often", 20, &mut rng).expect("o1");
-        persist_capture(&conn, "often", 30, &mut rng).expect("o2");
-        persist_capture(&conn, "often", 40, &mut rng).expect("o3");
+        persist_capture(&conn, "rare", 10, &mut rng, None).expect("r");
+        persist_capture(&conn, "often", 20, &mut rng, None).expect("o1");
+        persist_capture(&conn, "often", 30, &mut rng, None).expect("o2");
+        persist_capture(&conn, "often", 40, &mut rng, None).expect("o3");
         let top = query_top_capture_bodies_by_frequency(&conn, 5).expect("top");
         assert_eq!(top.len(), 2);
         assert_eq!(top[0].0, "often");
         assert_eq!(top[0].1, 3);
         assert_eq!(top[1].0, "rare");
         assert_eq!(top[1].1, 1);
+    }
+
+    #[test]
+    fn persist_capture_planned_duration_sets_planned_check() {
+        let conn = open_memory().expect("db");
+        let mut rng = StdRng::seed_from_u64(1);
+        let now = 1_000_000_i64;
+        persist_capture(&conn, "deep work", now, &mut rng, Some(45)).expect("p");
+        assert_eq!(get_next_ping_kind(&conn).unwrap(), NextPingKind::PlannedCheck);
+        assert_eq!(
+            get_next_ping_at_unix(&conn).unwrap().unwrap(),
+            now + 45 * 60
+        );
+        assert_eq!(
+            get_planned_check_subject(&conn).unwrap().as_deref(),
+            Some("deep work")
+        );
+    }
+
+    #[test]
+    fn ensure_next_ping_preserves_far_planned_check() {
+        let conn = open_memory().expect("db");
+        set_ping_min_max_minutes(&conn, 1, 2).expect("bounds");
+        let now = 5_000_000_i64;
+        let far = now + 4 * 3600;
+        set_next_ping_at_unix(&conn, far).expect("set");
+        set_next_ping_kind(&conn, NextPingKind::PlannedCheck).expect("kind");
+        let mut rng = StdRng::seed_from_u64(42);
+        let next = ensure_next_ping_scheduled(&conn, now, &mut rng).expect("ensure");
+        assert_eq!(next, far);
+        assert_eq!(get_next_ping_kind(&conn).unwrap(), NextPingKind::PlannedCheck);
+    }
+
+    #[test]
+    fn follow_up_keeps_thread_root_and_stacks_duration() {
+        let conn = open_memory().expect("db");
+        let mut rng = StdRng::seed_from_u64(21);
+        persist_capture(&conn, "reading", 1000, &mut rng, Some(30)).expect("first");
+        set_awaiting_followup(&conn, true).expect("ping");
+        set_planned_check_subject(&conn, "reading").expect("subj");
+        persist_capture(&conn, "still reading", 2000, &mut rng, Some(15)).expect("follow");
+        let list = query_recent_captures(&conn, 5).expect("list");
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].3, "reading");
+        assert_eq!(list[0].2, Some(15));
+        assert_eq!(list[1].3, "reading");
+        assert_eq!(list[1].2, Some(30));
+        let digest = query_activity_digest(&conn, 0).expect("digest");
+        let row = digest.iter().find(|(t, _, _)| t == "reading").expect("row");
+        assert_eq!(row.1, 45);
+        assert_eq!(row.2, 2);
+    }
+
+    #[test]
+    fn awaiting_followup_blank_minutes_uses_random_interval() {
+        let conn = open_memory().expect("db");
+        let mut rng = StdRng::seed_from_u64(5);
+        set_ping_min_max_minutes(&conn, 10, 20).expect("bounds");
+        set_awaiting_followup(&conn, true).expect("wait");
+        set_planned_check_subject(&conn, "reading").expect("subj");
+        persist_capture(&conn, "still reading", 1000, &mut rng, None).expect("save");
+        assert!(!get_awaiting_followup(&conn).unwrap());
+        assert_eq!(get_next_ping_kind(&conn).unwrap(), NextPingKind::Standard);
+        let next = get_next_ping_at_unix(&conn).unwrap().unwrap();
+        assert!(next > 1000);
+        assert!(next <= 1000 + 20 * 60 + 2);
+        assert!(next >= 1000 + 10 * 60 - 2);
     }
 }

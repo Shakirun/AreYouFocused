@@ -4,7 +4,6 @@
 //! between pings instead of the normal DB-driven schedule. Not for production.
 
 use crate::db::repo;
-use crate::domain::ping_plan;
 use crate::error::AppError;
 use crate::platform::PingNotifier;
 use crate::AppState;
@@ -98,10 +97,14 @@ pub fn spawn_ping_loop(handle: AppHandle, notifier: Arc<dyn PingNotifier>) {
                     let conn = &mut *db;
                     let mut rng = rand::thread_rng();
                     let now = unix_now();
-                    let (min_m, max_m) =
-                        repo::ping_min_max_minutes(conn).map_err(AppError::from)?;
-                    let nxt = ping_plan::next_ping_after(now, min_m, max_m, &mut rng);
-                    repo::set_next_ping_at_unix(conn, nxt).map_err(AppError::from)?;
+                    match repo::get_next_ping_kind(conn)? {
+                        repo::NextPingKind::PlannedCheck => {
+                            repo::apply_after_planned_check_ping(conn, now, &mut rng)?;
+                        }
+                        repo::NextPingKind::Standard => {
+                            repo::schedule_random_next_ping(conn, now, &mut rng)?;
+                        }
+                    }
                     Ok(())
                 })();
                 if let Err(e) = resched {
