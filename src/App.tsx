@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { useId, useState } from "react";
 
 /** Quick-capture shell. All user-facing strings are English until i18n (see /I18N.md). */
@@ -5,8 +6,9 @@ export default function App() {
   const labelId = useId();
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
-  function onSubmit(e: React.FormEvent) {
+  async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     const trimmed = text.trim();
@@ -14,8 +16,15 @@ export default function App() {
       setError("Write something first.");
       return;
     }
-    // Task 11: await invoke("submit_capture", { text: trimmed });
-    setText("");
+    setSaving(true);
+    try {
+      await invoke("submit_capture", { text: trimmed });
+      setText("");
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -40,6 +49,7 @@ export default function App() {
             value={text}
             onChange={(e) => setText(e.target.value)}
             rows={5}
+            disabled={saving}
             placeholder="Honest answer…"
             className="w-full resize-y rounded-lg border border-brand/25 bg-white px-3 py-2.5 text-sm text-ink shadow-sm outline-none ring-brand/20 transition-shadow duration-interaction placeholder:text-ink/40 focus:border-brand focus:ring-[3px] disabled:cursor-not-allowed disabled:opacity-60"
             aria-invalid={error ? true : undefined}
@@ -49,9 +59,10 @@ export default function App() {
 
         <button
           type="submit"
-          className="cursor-pointer rounded-lg bg-action px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors duration-interaction hover:bg-action-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-action motion-safe:active:scale-[0.99]"
+          disabled={saving}
+          className="cursor-pointer rounded-lg bg-action px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors duration-interaction hover:bg-action-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-action motion-safe:active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
         >
-          Save
+          {saving ? "Saving…" : "Save"}
         </button>
 
         <div
