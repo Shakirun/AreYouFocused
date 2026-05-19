@@ -3,7 +3,7 @@
 //! **QA:** set `AREYOUFOCUSED_DEV_PING_SECS` to a positive integer to sleep that many seconds
 //! between pings instead of the normal DB-driven schedule. Not for production.
 
-use crate::db::repo;
+use crate::db::{repo, sleep_hours};
 use crate::error::AppError;
 use crate::platform::PingNotifier;
 use crate::AppState;
@@ -85,10 +85,19 @@ pub fn spawn_ping_loop(handle: AppHandle, notifier: Arc<dyn PingNotifier>) {
                 sleep_until_next_ping_due(&handle).await;
             }
 
-            if let Err(e) = notifier.notify_ping_due(&handle) {
-                tracing::warn!("scheduler: notify: {e}");
+            let in_sleep = {
+                let state = handle.state::<AppState>();
+                let db = state.db.lock().unwrap_or_else(|p| p.into_inner());
+                sleep_hours::is_now_in_sleep(&db).unwrap_or(false)
+            };
+            if in_sleep {
+                tracing::debug!("scheduler: skip ping during sleeping hours");
+            } else {
+                if let Err(e) = notifier.notify_ping_due(&handle) {
+                    tracing::warn!("scheduler: notify: {e}");
+                }
+                emit_ping_due(&handle);
             }
-            emit_ping_due(&handle);
 
             if let Some(dev_s) = dev_secs {
                 let resched: Result<(), AppError> = (|| {
