@@ -7,7 +7,10 @@ import {
   SLEEP_START_PRESETS,
   TimePickerField,
 } from "./TimePickerField";
-import { useFitWindowHeight } from "./useFitWindowHeight";
+import {
+  MAX_WINDOW_INNER_HEIGHT,
+  useFitWindowHeight,
+} from "./useFitWindowHeight";
 
 type SchedulerStatus = {
   nextPingAtUnix: number | null;
@@ -1134,10 +1137,11 @@ export default function App() {
   return (
     <main
       ref={mainRef}
-      className="mx-auto flex max-w-md flex-col gap-3 px-4 py-5"
+      className="mx-auto flex max-w-md flex-col overflow-hidden px-4 py-5"
+      style={{ maxHeight: MAX_WINDOW_INNER_HEIGHT }}
     >
       <nav
-        className="flex gap-1 rounded-xl border border-brand/20 bg-white/70 p-1 shadow-sm"
+        className="flex shrink-0 gap-1 rounded-xl border border-brand/20 bg-white/70 p-1 shadow-sm"
         role="tablist"
         aria-label="Main sections"
       >
@@ -1179,6 +1183,7 @@ export default function App() {
         </button>
       </nav>
 
+      <div className="app-tab-scroll flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
       {mainTab === "capture" ? (
         <section
           className={`capture-status-card flex flex-col gap-0 p-3.5 ${
@@ -2407,6 +2412,7 @@ export default function App() {
         </div>
       </form>
       ) : null}
+      </div>
 
       {gapFillPrompt ? (
         <div
