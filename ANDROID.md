@@ -8,6 +8,9 @@ AreYouFocused uses **Tauri 2** for Android. The repo includes `src-tauri/tauri.a
 > Windows 11 **Smart App Control** blocks Rust build scripts during `cargo build`. This is an environment issue, not an AreYouFocused bug.  
 > **Quick fix:** turn SAC **Off**, reboot, then `cargo clean` and rebuild. Full ranked steps (SAC, WSL2, Defender exclusions, Developer Mode): **[BUILD-WINDOWS.md](BUILD-WINDOWS.md)**.
 
+> **Rust compiled, then failed on `lib*.so` / “Creation symbolic link is not allowed”?**  
+> After `cargo build` for Android targets, Tauri links compiled `.so` files into `jniLibs` with **symbolic links**. On Windows 10/11 this requires **Developer Mode** (or an elevated terminal with symlink privilege). There is **no** `tauri.conf.json` flag or CLI switch to copy instead — see [Developer Mode (required for jniLibs symlinks)](#developer-mode-required-for-jnilibs-symlinks-on-windows) below.
+
 ### 1. Install Android Studio
 
 If Android Studio is not installed:
@@ -179,6 +182,55 @@ If **Java is OK** but the SDK is not found (`ANDROID_HOME` unset, or SDK path em
 rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
 ```
 
+### Developer Mode (required for jniLibs symlinks on Windows)
+
+Tauri 2 (via `cargo-mobile2`) always **symlinks** built native libraries from `src-tauri/target/<android-triple>/…/lib*.so` into `src-tauri/gen/android/app/src/main/jniLibs/<abi>/`. On Windows, creating symlinks without privilege fails with:
+
+```text
+Failed to create a symbolic link … libare_you_focused_lib.so …
+Creation symbolic link is not allowed for this system.
+For Windows 10 or newer: You should use developer mode.
+```
+
+**There is no copy fallback** in current Tauri CLI (`tauri android build` / `dev`), `tauri.conf.json`, or documented env vars — enable symlinks on the host.
+
+#### Recommended: Developer Mode (no admin each time)
+
+**English UI**
+
+1. **Settings** → **Privacy & security** → **For developers**
+2. Turn **Developer Mode** **On**
+3. Confirm the dialog if Windows asks
+4. **Reboot** if the toggle was off before (recommended)
+5. Open a **new** PowerShell in the project folder and rebuild:
+
+   ```powershell
+   npm run tauri:android:build -- --apk
+   ```
+
+Shortcut: **Win + R** → `ms-settings:developers`
+
+**Русский интерфейс**
+
+1. **Параметры** → **Конфиденциальность и защита** → **Для разработчиков**
+2. Включите **Режим разработчика**
+3. Подтвердите запрос Windows, если появится
+4. **Перезагрузите** ПК, если режим был выключен (рекомендуется)
+5. Откройте **новый** PowerShell в папке проекта и пересоберите:
+
+   ```powershell
+   npm run tauri:android:build -- --apk
+   ```
+
+#### Alternative: elevated terminal (admin)
+
+Running PowerShell **Run as administrator** grants `SeCreateSymbolicLinkPrivilege` for that session. This works but is less convenient than Developer Mode for day-to-day builds. See [BUILD-WINDOWS.md — Developer Mode & symlinks](BUILD-WINDOWS.md#4-developer-mode-android-jnilibs-symlinks--optional-for-sac).
+
+#### Other symlink pitfalls
+
+- Project on **exFAT / FAT32** (common on USB drives): symlinks are not supported — keep the repo on **NTFS** (e.g. `C:\Users\…`).
+- Stale `jniLibs` files from a failed run: delete `src-tauri\gen\android\app\src\main\jniLibs\` and rebuild.
+
 ## One-time init
 
 From the project root (after prerequisites):
@@ -202,8 +254,10 @@ Connect a phone with USB debugging or start an AVD in Android Studio.
 
 ```powershell
 npm run build
-npm run tauri:android:build
+npm run tauri:android:build -- --apk
 ```
+
+For Google Play (AAB only): `npm run tauri:android:build` (no `--apk`).
 
 Artifacts are under `src-tauri/gen/android/app/build/outputs/`.
 
@@ -220,6 +274,8 @@ Windows desktop build is unchanged: `npm run tauri:build`.
 | Symptom | Likely cause | Action |
 |---------|--------------|--------|
 | `Application Control policy has blocked this file (os error 4551)` on `build-script-build` | Smart App Control | [BUILD-WINDOWS.md](BUILD-WINDOWS.md) — disable SAC or use WSL2 |
+| `Creation symbolic link is not allowed` / `Failed to create a symbolic link` for `lib*.so` in `jniLibs` | Windows symlink privilege | [Developer Mode](#developer-mode-required-for-jnilibs-symlinks-on-windows) **On**, reboot, new terminal, rebuild |
+| `Incorrect function` / `os error 1` on jniLibs symlink | exFAT/FAT32 or external drive | Move project to NTFS (e.g. system drive) |
 | Build still fails after disabling SAC | Stale blocked artifacts | `cd src-tauri; cargo clean; cd ..` then rebuild |
 | `Java not found` / SDK not found | `JAVA_HOME` / `ANDROID_HOME` | [Verify environment](#5-verify-environment), `.\scripts\setup-android-env.ps1` |
 | Slow Rust compiles, Defender warnings | Antivirus scanning `target\` | Defender exclusions in [BUILD-WINDOWS.md](BUILD-WINDOWS.md) (does **not** replace disabling SAC) |

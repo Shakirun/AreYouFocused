@@ -28,7 +28,7 @@ Same root cause affects **desktop** and **Android** Tauri builds on Windows.
 |---|-----|--------|-----------------|-------|
 | 1 | **Turn off Smart App Control** | Low | **Yes** | Most reliable on native Windows. See [Disable SAC](#1-disable-smart-app-control-recommended-on-windows). |
 | 2 | **Build from WSL2 (Linux)** | High | **Yes** | SAC applies to Windows processes only. See [WSL2 Android build](#3-build-from-wsl2-linux-side). |
-| 3 | **Enable Developer Mode** | Low | **Sometimes** | Worth toggling; Microsoft may disable SAC for dev machines — **not guaranteed**. |
+| 3 | **Enable Developer Mode** | Low | **Sometimes (SAC)** / **Yes (Android jniLibs)** | Required for Tauri Android **symlinks** on Windows 10/11; may also help SAC — see [§4](#4-developer-mode-android-jnilibs-symlinks--optional-for-sac). |
 | 4 | **Defender folder exclusions** | Low | **No** | Speeds up Rust builds and avoids *other* blocks; **does not replace** turning SAC off. See [Defender exclusions](#2-defender-exclusions-not-a-sac-bypass). |
 
 After any change that should unblock builds, run:
@@ -130,13 +130,45 @@ Running `cargo` / `tauri android build` **inside WSL2 Ubuntu** avoids Windows SA
 
 ---
 
-## 4. Developer Mode (optional, unreliable for SAC)
+## 4. Developer Mode (Android jniLibs symlinks + optional for SAC)
+
+Tauri Android builds symlink compiled `.so` files into `src-tauri/gen/android/.../jniLibs/`. On Windows, symlink creation fails without privilege:
+
+```text
+Failed to create a symbolic link … lib*_lib.so …
+Creation symbolic link is not allowed for this system.
+For Windows 10 or newer: You should use developer mode.
+```
+
+**Tauri 2 has no documented copy fallback** — no `tauri.conf.json` option, CLI flag, or env var switches jniLibs to file copy. Upstream uses `cargo-mobile2` → `symlink_lib()` only ([tauri-apps/tauri#10937](https://github.com/tauri-apps/tauri/issues/10937)). **Developer Mode is the practical fix** for native Windows builds.
+
+### Enable Developer Mode (recommended)
 
 **Settings** → **Privacy & security** → **For developers** → **Developer Mode** → **On**
 
-**Параметры** → **Конфиденциальность и защита** → **Для разработчиков** → **Режим разработчика**
+**Параметры** → **Конфиденциальность и защита** → **Для разработчиков** → **Режим разработчика** → **Вкл.**
 
-Microsoft states SAC may stay off on machines configured for development, but many users still see **4551** with Developer Mode on. Treat this as a **quick try**, not a fix.
+Shortcut: **Win + R** → `ms-settings:developers`
+
+1. Turn **Developer Mode** on and confirm any dialog.
+2. **Reboot** if it was previously off (recommended).
+3. Open a **new** PowerShell in the repo and retry:
+
+   ```powershell
+   npm run tauri:android:build -- --apk
+   ```
+
+Full Android context: [ANDROID.md](ANDROID.md#developer-mode-required-for-jnilibs-symlinks-on-windows).
+
+### Alternative: Run terminal as administrator
+
+An elevated PowerShell/CMD session has `SeCreateSymbolicLinkPrivilege` without Developer Mode. Right-click terminal → **Run as administrator**, then build. Less convenient for daily use; Developer Mode is preferred.
+
+On Windows 8.1 and older (not typical), symlink creation requires assigning **Create symbolic links** via Group Policy instead — see [Microsoft docs](https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/create-symbolic-links).
+
+### Smart App Control note
+
+Microsoft states SAC may stay off on machines configured for development, but many users still see **4551** with Developer Mode on. For SAC, treat Developer Mode as a **quick try**, not a guaranteed fix. For **Android jniLibs**, Developer Mode is **required** unless you build from WSL2/Linux or use an admin terminal every time.
 
 ---
 

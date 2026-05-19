@@ -11,9 +11,8 @@ mod tray;
 mod window_util;
 
 use std::sync::{Arc, Mutex};
-use tauri::Manager;
 #[cfg(desktop)]
-use tauri::WindowEvent;
+use tauri::{Manager, WindowEvent};
 
 pub struct AppState {
     pub db: Mutex<rusqlite::Connection>,

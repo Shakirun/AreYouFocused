@@ -10,9 +10,9 @@ use rusqlite::Connection;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 #[cfg(desktop)]
-use tauri::{WebviewUrl, WebviewWindowBuilder};
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 #[cfg(desktop)]
 use tauri::webview::PageLoadEvent;
 use tauri_plugin_dialog::DialogExt;
@@ -392,6 +392,7 @@ pub fn history_report_html(
     Ok(export::report_to_html(&report))
 }
 
+#[cfg(desktop)]
 const HISTORY_REPORT_WINDOW_LABEL: &str = "history-report";
 
 /// Open a dedicated webview with the report and trigger the system print dialog.
