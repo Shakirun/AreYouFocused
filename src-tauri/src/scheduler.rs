@@ -113,6 +113,9 @@ pub fn spawn_ping_loop(handle: AppHandle, notifier: Arc<dyn PingNotifier>) {
                         repo::NextPingKind::PlannedCheck => {
                             repo::apply_after_planned_check_ping(conn)?;
                         }
+                        repo::NextPingKind::Overdue => {
+                            repo::schedule_overdue_next_ping(conn, now, &mut rng)?;
+                        }
                         repo::NextPingKind::Standard => {
                             repo::schedule_random_next_ping(conn, now, &mut rng)?;
                         }

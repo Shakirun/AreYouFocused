@@ -2,6 +2,20 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer components {
+  .capture-status-card {
+    @apply rounded-xl border border-brand/20 bg-white/85 shadow-sm;
+  }
+
+  .capture-primary-btn {
+    @apply cursor-pointer rounded-lg border border-brand/30 bg-white/95 px-2 py-2.5 text-sm font-semibold text-ink shadow-sm transition-colors duration-interaction hover:border-brand/45 hover:bg-brand/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-55;
+  }
+
+  .capture-secondary-btn {
+    @apply cursor-pointer rounded-md border border-brand/20 bg-white/80 px-2.5 py-1 text-xs font-medium text-ink/75 transition-colors duration-interaction hover:border-brand/35 hover:bg-brand/10 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-50;
+  }
+}
+
 @layer base {
   /* Let document height follow content so Tauri can measure `scrollHeight` for fit-to-window. */
   html,

@@ -9,12 +9,14 @@ use rusqlite::{params, Connection, OptionalExtension};
 pub enum NextPingKind {
     Standard,
     PlannedCheck,
+    Overdue,
 }
 
 impl NextPingKind {
     pub fn from_db(s: &str) -> Self {
         match s.trim() {
             "planned_check" => NextPingKind::PlannedCheck,
+            "overdue" => NextPingKind::Overdue,
             _ => NextPingKind::Standard,
         }
     }
@@ -23,6 +25,7 @@ impl NextPingKind {
         match self {
             NextPingKind::Standard => "standard",
             NextPingKind::PlannedCheck => "planned_check",
+            NextPingKind::Overdue => "overdue",
         }
     }
 }
@@ -102,6 +105,41 @@ pub fn has_future_planned_ping(conn: &Connection, now_unix: i64) -> rusqlite::Re
         .unwrap_or(false))
 }
 
+/// Latest unfinished timed capture `(started_at_unix, duration_minutes)`.
+fn latest_unfinished_timed_capture(
+    conn: &Connection,
+) -> rusqlite::Result<Option<(i64, i64)>> {
+    conn.query_row(
+        "SELECT created_at_unix, duration_minutes FROM captures
+         WHERE duration_minutes IS NOT NULL AND COALESCE(finished, 0) = 0
+         ORDER BY created_at_unix DESC LIMIT 1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
+}
+
+/// Planned end unix for the active unfinished timed capture, if any.
+pub fn unfinished_timed_planned_end_unix(conn: &Connection) -> rusqlite::Result<Option<i64>> {
+    Ok(latest_unfinished_timed_capture(conn)?
+        .map(|(started, dur)| started.saturating_add(dur.saturating_mul(60))))
+}
+
+/// True when a timed task's planned end is in the past and it is not marked done.
+pub fn is_timed_capture_overdue(conn: &Connection, now_unix: i64) -> rusqlite::Result<bool> {
+    Ok(unfinished_timed_planned_end_unix(conn)?
+        .map(|end| end <= now_unix)
+        .unwrap_or(false))
+}
+
+/// Overdue follow-up pings apply when the planned end passed and the task is still open.
+pub fn should_use_overdue_schedule(conn: &Connection, now_unix: i64) -> rusqlite::Result<bool> {
+    if !overdue_ping_enabled(conn)? {
+        return Ok(false);
+    }
+    Ok(is_timed_capture_overdue(conn, now_unix)?)
+}
+
 /// Latest timed capture row that has not been explicitly marked done.
 pub fn has_unfinished_timed_capture(conn: &Connection) -> rusqlite::Result<bool> {
     let exists: Option<i64> = conn
@@ -139,6 +177,9 @@ pub fn schedule_random_next_ping<R: Rng + ?Sized>(
     now_unix: i64,
     rng: &mut R,
 ) -> Result<(), AppError> {
+    if !random_ping_enabled(conn)? {
+        return Ok(());
+    }
     if !should_use_standard_schedule(conn, now_unix)? {
         return Ok(());
     }
@@ -146,6 +187,22 @@ pub fn schedule_random_next_ping<R: Rng + ?Sized>(
     let next = ping_plan::next_ping_after(now_unix, min_m, max_m, rng);
     set_next_ping_at_unix(conn, next)?;
     set_next_ping_kind(conn, NextPingKind::Standard)?;
+    Ok(())
+}
+
+/// Rolls the next ping using overdue min/max while a timed task is past its planned end.
+pub fn schedule_overdue_next_ping<R: Rng + ?Sized>(
+    conn: &Connection,
+    now_unix: i64,
+    rng: &mut R,
+) -> Result<(), AppError> {
+    if !should_use_overdue_schedule(conn, now_unix)? {
+        return Ok(());
+    }
+    let (min_m, max_m) = overdue_ping_min_max_minutes(conn)?;
+    let next = ping_plan::next_ping_after(now_unix, min_m, max_m, rng);
+    set_next_ping_at_unix(conn, next)?;
+    set_next_ping_kind(conn, NextPingKind::Overdue)?;
     Ok(())
 }
 
@@ -221,6 +278,10 @@ pub fn ensure_next_ping_scheduled<R: Rng + ?Sized>(
     now_unix: i64,
     rng: &mut R,
 ) -> Result<i64, AppError> {
+    if should_use_overdue_schedule(conn, now_unix)? {
+        return ensure_overdue_ping_scheduled(conn, now_unix, rng);
+    }
+
     if get_awaiting_followup(conn)? {
         return Ok(now_unix.saturating_add(AWAITING_IDLE_SLEEP_SECS));
     }
@@ -231,37 +292,98 @@ pub fn ensure_next_ping_scheduled<R: Rng + ?Sized>(
         Some(t) => {
             if t > now_unix {
                 let delta = t.saturating_sub(now_unix);
-                let cap = max_valid_delay_secs(max_m);
                 let kind = get_next_ping_kind(conn)?;
-                let preserve_far_future =
-                    approx_snooze_delay_secs(delta) || kind == NextPingKind::PlannedCheck;
+                let cap = match kind {
+                    NextPingKind::Overdue => {
+                        max_valid_delay_secs(overdue_ping_min_max_minutes(conn)?.1)
+                    }
+                    _ => max_valid_delay_secs(max_m),
+                };
+                let preserve_far_future = approx_snooze_delay_secs(delta)
+                    || kind == NextPingKind::PlannedCheck
+                    || kind == NextPingKind::Overdue;
                 if delta > cap && !preserve_far_future {
-                    let next = ping_plan::next_ping_after(now_unix, min_m, max_m, rng);
-                    set_next_ping_at_unix(conn, next)?;
-                    Ok(next)
+                    if random_ping_enabled(conn)? {
+                        let next = ping_plan::next_ping_after(now_unix, min_m, max_m, rng);
+                        set_next_ping_at_unix(conn, next)?;
+                        set_next_ping_kind(conn, NextPingKind::Standard)?;
+                        Ok(next)
+                    } else {
+                        Ok(now_unix.saturating_add(AWAITING_IDLE_SLEEP_SECS))
+                    }
                 } else {
                     Ok(t)
                 }
             } else if get_next_ping_kind(conn)? == NextPingKind::PlannedCheck {
                 Ok(now_unix)
             } else if should_use_standard_schedule(conn, now_unix)? {
-                let next = ping_plan::next_ping_after(now_unix, min_m, max_m, rng);
-                set_next_ping_at_unix(conn, next)?;
-                Ok(next)
+                schedule_random_next_ping(conn, now_unix, rng)?;
+                Ok(get_next_ping_at_unix(conn)?.unwrap_or(now_unix))
             } else {
                 Ok(now_unix.saturating_add(AWAITING_IDLE_SLEEP_SECS))
             }
         }
         None => {
             if should_use_standard_schedule(conn, now_unix)? {
-                let next = ping_plan::next_ping_after(now_unix, min_m, max_m, rng);
-                set_next_ping_at_unix(conn, next)?;
-                Ok(next)
+                schedule_random_next_ping(conn, now_unix, rng)?;
+                Ok(get_next_ping_at_unix(conn)?.unwrap_or(now_unix))
             } else {
                 Ok(now_unix.saturating_add(AWAITING_IDLE_SLEEP_SECS))
             }
         }
     }
+}
+
+fn ensure_overdue_ping_scheduled<R: Rng + ?Sized>(
+    conn: &Connection,
+    now_unix: i64,
+    rng: &mut R,
+) -> Result<i64, AppError> {
+    let (min_m, max_m) = overdue_ping_min_max_minutes(conn)?;
+    match get_next_ping_at_unix(conn)? {
+        Some(t) if t > now_unix => {
+            let kind = get_next_ping_kind(conn)?;
+            if kind == NextPingKind::Overdue {
+                Ok(t)
+            } else {
+                let next = ping_plan::next_ping_after(now_unix, min_m, max_m, rng);
+                set_next_ping_at_unix(conn, next)?;
+                set_next_ping_kind(conn, NextPingKind::Overdue)?;
+                Ok(next)
+            }
+        }
+        _ => {
+            let next = ping_plan::next_ping_after(now_unix, min_m, max_m, rng);
+            set_next_ping_at_unix(conn, next)?;
+            set_next_ping_kind(conn, NextPingKind::Overdue)?;
+            Ok(next)
+        }
+    }
+}
+
+fn setting_bool(conn: &Connection, key: &str) -> rusqlite::Result<bool> {
+    let v: String = conn.query_row(
+        "SELECT value FROM settings WHERE key = ?1",
+        params![key],
+        |row| row.get(0),
+    )?;
+    Ok(v.trim() == "1" || v.eq_ignore_ascii_case("true"))
+}
+
+fn set_setting_bool(conn: &Connection, key: &str, enabled: bool) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE settings SET value = ?1 WHERE key = ?2",
+        params![if enabled { "1" } else { "0" }, key],
+    )?;
+    Ok(())
+}
+
+pub fn random_ping_enabled(conn: &Connection) -> rusqlite::Result<bool> {
+    setting_bool(conn, "random_ping_enabled")
+}
+
+pub fn overdue_ping_enabled(conn: &Connection) -> rusqlite::Result<bool> {
+    setting_bool(conn, "overdue_ping_enabled")
 }
 
 pub fn ping_min_max_minutes(conn: &Connection) -> rusqlite::Result<(i64, i64)> {
@@ -272,6 +394,20 @@ pub fn ping_min_max_minutes(conn: &Connection) -> rusqlite::Result<(i64, i64)> {
     )?;
     let max: i64 = conn.query_row(
         "SELECT CAST(value AS INTEGER) FROM settings WHERE key = 'ping_max_minutes'",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok((min, max))
+}
+
+pub fn overdue_ping_min_max_minutes(conn: &Connection) -> rusqlite::Result<(i64, i64)> {
+    let min: i64 = conn.query_row(
+        "SELECT CAST(value AS INTEGER) FROM settings WHERE key = 'overdue_ping_min_minutes'",
+        [],
+        |row| row.get(0),
+    )?;
+    let max: i64 = conn.query_row(
+        "SELECT CAST(value AS INTEGER) FROM settings WHERE key = 'overdue_ping_max_minutes'",
         [],
         |row| row.get(0),
     )?;
@@ -301,7 +437,12 @@ pub fn snooze_next_ping(conn: &Connection, now_unix: i64) -> rusqlite::Result<i6
     Ok(next)
 }
 
-pub fn set_ping_min_max_minutes(conn: &Connection, min_m: i64, max_m: i64) -> Result<(), AppError> {
+pub fn set_ping_min_max_minutes(
+    conn: &Connection,
+    min_m: i64,
+    max_m: i64,
+    random_enabled: bool,
+) -> Result<(), AppError> {
     if min_m < 1 {
         return Err(AppError::InvalidPingBounds(
             "minimum must be at least 1 minute".into(),
@@ -325,6 +466,40 @@ pub fn set_ping_min_max_minutes(conn: &Connection, min_m: i64, max_m: i64) -> Re
         "UPDATE settings SET value = ?1 WHERE key = 'ping_max_minutes'",
         params![max_m.to_string()],
     )?;
+    set_setting_bool(conn, "random_ping_enabled", random_enabled)?;
+    Ok(())
+}
+
+pub fn set_overdue_ping_min_max_minutes(
+    conn: &Connection,
+    min_m: i64,
+    max_m: i64,
+    overdue_enabled: bool,
+) -> Result<(), AppError> {
+    if min_m < 1 {
+        return Err(AppError::InvalidPingBounds(
+            "minimum must be at least 1 minute".into(),
+        ));
+    }
+    if max_m < min_m {
+        return Err(AppError::InvalidPingBounds(
+            "maximum must be greater than or equal to minimum".into(),
+        ));
+    }
+    if max_m > PING_MAX_MINUTES_CAP {
+        return Err(AppError::InvalidPingBounds(format!(
+            "maximum must be at most {PING_MAX_MINUTES_CAP} minutes (one week)"
+        )));
+    }
+    conn.execute(
+        "UPDATE settings SET value = ?1 WHERE key = 'overdue_ping_min_minutes'",
+        params![min_m.to_string()],
+    )?;
+    conn.execute(
+        "UPDATE settings SET value = ?1 WHERE key = 'overdue_ping_max_minutes'",
+        params![max_m.to_string()],
+    )?;
+    set_setting_bool(conn, "overdue_ping_enabled", overdue_enabled)?;
     Ok(())
 }
 
@@ -605,6 +780,95 @@ pub fn latest_thread_root(conn: &Connection) -> rusqlite::Result<Option<String>>
     .optional()
 }
 
+/// What the capture tab should show as the user's current activity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentActivitySnapshot {
+    pub body: Option<String>,
+    pub started_at_unix: Option<i64>,
+    pub duration_minutes: Option<i64>,
+    pub planned_end_at_unix: Option<i64>,
+}
+
+/// Resolves **Nothing** vs active tracking for the capture header.
+///
+/// - **Nothing** when there are no captures, or when the latest `finished = 1` timed row
+///   has no newer captures after it.
+/// - **Active** when there is at least one capture after that boundary (including an
+///   unfinished timed task, or any quick capture logged since the last explicit Done).
+pub fn query_current_activity(conn: &Connection) -> rusqlite::Result<CurrentActivitySnapshot> {
+    let total: i64 = conn.query_row("SELECT COUNT(*) FROM captures", [], |row| row.get(0))?;
+    if total == 0 {
+        return Ok(CurrentActivitySnapshot {
+            body: None,
+            started_at_unix: None,
+            duration_minutes: None,
+            planned_end_at_unix: None,
+        });
+    }
+
+    let last_finished_at: Option<i64> = conn
+        .query_row(
+            "SELECT created_at_unix FROM captures
+             WHERE duration_minutes IS NOT NULL AND COALESCE(finished, 0) = 1
+             ORDER BY created_at_unix DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    let active = match last_finished_at {
+        Some(ts) => conn
+            .query_row(
+                "SELECT body, created_at_unix, duration_minutes FROM captures
+                 WHERE created_at_unix > ?1
+                 ORDER BY created_at_unix DESC LIMIT 1",
+                params![ts],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                    ))
+                },
+            )
+            .optional()?,
+        None => conn
+            .query_row(
+                "SELECT body, created_at_unix, duration_minutes FROM captures
+                 ORDER BY created_at_unix DESC LIMIT 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                    ))
+                },
+            )
+            .optional()?,
+    };
+
+    match active {
+        Some((body, started, duration_minutes)) if !body.trim().is_empty() => {
+            let planned_end_at_unix = duration_minutes
+                .filter(|d| *d > 0)
+                .map(|d| started.saturating_add(d.saturating_mul(60)));
+            Ok(CurrentActivitySnapshot {
+                body: Some(body),
+                started_at_unix: Some(started),
+                duration_minutes,
+                planned_end_at_unix,
+            })
+        }
+        _ => Ok(CurrentActivitySnapshot {
+            body: None,
+            started_at_unix: None,
+            duration_minutes: None,
+            planned_end_at_unix: None,
+        }),
+    }
+}
+
 /// Latest captures first. `limit` is clamped to **1..=50** for predictable UI cost.
 pub fn query_recent_captures(
     conn: &Connection,
@@ -698,7 +962,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM settings", [], |row| row.get(0))
             .expect("count settings");
-        assert_eq!(count, 2);
+        assert_eq!(count, 6);
     }
 
     #[test]
@@ -761,15 +1025,15 @@ mod tests {
     fn set_ping_bounds_rejects_invalid() {
         let conn = open_memory().expect("db");
         assert!(matches!(
-            set_ping_min_max_minutes(&conn, 0, 60),
+            set_ping_min_max_minutes(&conn, 0, 60, true),
             Err(AppError::InvalidPingBounds(_))
         ));
         assert!(matches!(
-            set_ping_min_max_minutes(&conn, 10, 5),
+            set_ping_min_max_minutes(&conn, 10, 5, true),
             Err(AppError::InvalidPingBounds(_))
         ));
         assert!(matches!(
-            set_ping_min_max_minutes(&conn, 1, PING_MAX_MINUTES_CAP + 1),
+            set_ping_min_max_minutes(&conn, 1, PING_MAX_MINUTES_CAP + 1, true),
             Err(AppError::InvalidPingBounds(_))
         ));
     }
@@ -778,7 +1042,7 @@ mod tests {
     fn set_ping_bounds_and_reschedule() {
         let conn = open_memory().expect("db");
         let mut rng = StdRng::seed_from_u64(11);
-        set_ping_min_max_minutes(&conn, 5, 10).expect("set");
+        set_ping_min_max_minutes(&conn, 5, 10, true).expect("set");
         assert_eq!(ping_min_max_minutes(&conn).unwrap(), (5, 10));
         let now = 2_000_000_i64;
         reschedule_next_ping_from_now(&conn, now, &mut rng).expect("roll");
@@ -803,7 +1067,7 @@ mod tests {
     #[test]
     fn ensure_next_ping_reschedules_when_stored_ping_beyond_max_interval() {
         let conn = open_memory().expect("db");
-        set_ping_min_max_minutes(&conn, 1, 1).expect("bounds");
+        set_ping_min_max_minutes(&conn, 1, 1, true).expect("bounds");
         let now = 5_000_000_i64;
         set_next_ping_at_unix(&conn, now + 3_600).expect("far future");
         let mut rng = StdRng::seed_from_u64(42);
@@ -815,7 +1079,7 @@ mod tests {
     #[test]
     fn ensure_next_ping_preserves_snooze_under_tight_bounds() {
         let conn = open_memory().expect("db");
-        set_ping_min_max_minutes(&conn, 1, 1).expect("bounds");
+        set_ping_min_max_minutes(&conn, 1, 1, true).expect("bounds");
         let now = 8_000_000_i64;
         snooze_next_ping(&conn, now).expect("snooze");
         let mut rng = StdRng::seed_from_u64(99);
@@ -916,7 +1180,7 @@ mod tests {
     #[test]
     fn ensure_next_ping_preserves_far_planned_check() {
         let conn = open_memory().expect("db");
-        set_ping_min_max_minutes(&conn, 1, 2).expect("bounds");
+        set_ping_min_max_minutes(&conn, 1, 2, true).expect("bounds");
         let now = 5_000_000_i64;
         let far = now + 4 * 3600;
         set_next_ping_at_unix(&conn, far).expect("set");
@@ -951,7 +1215,7 @@ mod tests {
     fn awaiting_followup_blank_minutes_uses_random_interval() {
         let conn = open_memory().expect("db");
         let mut rng = StdRng::seed_from_u64(5);
-        set_ping_min_max_minutes(&conn, 10, 20).expect("bounds");
+        set_ping_min_max_minutes(&conn, 10, 20, true).expect("bounds");
         set_awaiting_followup(&conn, true).expect("wait");
         set_planned_check_subject(&conn, "reading").expect("subj");
         persist_capture(&conn, "still reading", 1000, &mut rng, None).expect("save");
@@ -1029,27 +1293,26 @@ mod tests {
     }
 
     #[test]
-    fn apply_after_planned_check_does_not_schedule_random_ping() {
+    fn apply_after_planned_check_schedules_overdue_when_enabled() {
         let conn = open_memory().expect("db");
-        set_ping_min_max_minutes(&conn, 1, 1).expect("bounds");
+        set_overdue_ping_min_max_minutes(&conn, 5, 10, true).expect("bounds");
         let mut rng = StdRng::seed_from_u64(88);
         let now = 3_000_000_i64;
         persist_capture(&conn, "focus", now, &mut rng, Some(30)).expect("save");
         let planned = get_next_ping_at_unix(&conn).unwrap().unwrap();
-        set_next_ping_at_unix(&conn, planned).expect("set");
         apply_after_planned_check_ping(&conn).expect("after");
         assert!(get_awaiting_followup(&conn).unwrap());
-        assert_eq!(get_next_ping_at_unix(&conn).unwrap(), None);
-        assert_eq!(get_next_ping_kind(&conn).unwrap(), NextPingKind::PlannedCheck);
         let mut rng2 = StdRng::seed_from_u64(89);
-        let next = ensure_next_ping_scheduled(&conn, now + 5, &mut rng2).expect("ensure");
-        assert!(next > now + 3600);
+        let next = ensure_next_ping_scheduled(&conn, planned + 1, &mut rng2).expect("ensure");
+        assert!(next > planned);
+        assert!(next <= planned + 10 * 60 + 2);
+        assert_eq!(get_next_ping_kind(&conn).unwrap(), NextPingKind::Overdue);
     }
 
     #[test]
     fn mark_latest_timed_capture_finished_allows_standard_schedule() {
         let conn = open_memory().expect("db");
-        set_ping_min_max_minutes(&conn, 5, 10).expect("bounds");
+        set_ping_min_max_minutes(&conn, 5, 10, true).expect("bounds");
         let mut rng = StdRng::seed_from_u64(90);
         let now = 4_000_000_i64;
         persist_capture(&conn, "task", now, &mut rng, Some(20)).expect("save");
@@ -1064,7 +1327,7 @@ mod tests {
     #[test]
     fn timed_capture_blocks_random_until_finished() {
         let conn = open_memory().expect("db");
-        set_ping_min_max_minutes(&conn, 1, 1).expect("bounds");
+        set_ping_min_max_minutes(&conn, 1, 1, true).expect("bounds");
         let mut rng = StdRng::seed_from_u64(91);
         let now = 5_000_000_i64;
         persist_capture(&conn, "work", now, &mut rng, Some(45)).expect("save");
@@ -1091,5 +1354,59 @@ mod tests {
         );
         let rows = query_recent_captures(&conn, 1).expect("list");
         assert_eq!(rows[0].2, Some(45));
+    }
+
+    #[test]
+    fn query_current_activity_empty_db() {
+        let conn = open_memory().expect("db");
+        let snap = query_current_activity(&conn).expect("query");
+        assert_eq!(snap.body, None);
+        assert_eq!(snap.started_at_unix, None);
+        assert_eq!(snap.duration_minutes, None);
+    }
+
+    #[test]
+    fn query_current_activity_shows_latest_capture() {
+        let conn = open_memory().expect("db");
+        let mut rng = StdRng::seed_from_u64(201);
+        persist_capture(&conn, "reading", 1_000, &mut rng, None).expect("save");
+        let snap = query_current_activity(&conn).expect("query");
+        assert_eq!(snap.body.as_deref(), Some("reading"));
+        assert_eq!(snap.started_at_unix, Some(1_000));
+        assert_eq!(snap.duration_minutes, None);
+    }
+
+    #[test]
+    fn query_current_activity_nothing_after_mark_done_without_new_capture() {
+        let conn = open_memory().expect("db");
+        let mut rng = StdRng::seed_from_u64(202);
+        persist_capture(&conn, "task", 2_000, &mut rng, Some(30)).expect("save");
+        mark_latest_timed_capture_finished(&conn).expect("done");
+        let snap = query_current_activity(&conn).expect("query");
+        assert_eq!(snap.body, None);
+    }
+
+    #[test]
+    fn query_current_activity_after_done_with_new_capture() {
+        let conn = open_memory().expect("db");
+        let mut rng = StdRng::seed_from_u64(203);
+        persist_capture(&conn, "task", 2_000, &mut rng, Some(30)).expect("save");
+        mark_latest_timed_capture_finished(&conn).expect("done");
+        persist_capture(&conn, "email", 3_000, &mut rng, None).expect("save");
+        let snap = query_current_activity(&conn).expect("query");
+        assert_eq!(snap.body.as_deref(), Some("email"));
+        assert_eq!(snap.started_at_unix, Some(3_000));
+        assert_eq!(snap.duration_minutes, None);
+    }
+
+    #[test]
+    fn query_current_activity_unfinished_timed_task() {
+        let conn = open_memory().expect("db");
+        let mut rng = StdRng::seed_from_u64(204);
+        persist_capture(&conn, "deep work", 4_000, &mut rng, Some(45)).expect("save");
+        let snap = query_current_activity(&conn).expect("query");
+        assert_eq!(snap.body.as_deref(), Some("deep work"));
+        assert_eq!(snap.started_at_unix, Some(4_000));
+        assert_eq!(snap.duration_minutes, Some(45));
     }
 }

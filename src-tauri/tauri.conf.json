@@ -15,10 +15,8 @@
         "label": "capture",
         "title": "AreYouFocused — Capture",
         "width": 420,
-        "height": 560,
-        "minWidth": 360,
-        "minHeight": 320,
-        "resizable": true
+        "height": 520,
+        "resizable": false
       }
     ],
     "security": {

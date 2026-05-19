@@ -1,18 +1,23 @@
+use super::aumid;
+use super::win_toast::{self, PingToastContent, ToastButton, TOAST_LAUNCH_FOCUS};
 use super::PingNotifier;
 use crate::db::repo::{self, NextPingKind};
 use crate::error::AppError;
 use crate::window_util;
 use crate::AppState;
+use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_winrt_notification::{Duration, Toast};
 
-/// Toast button `arguments`; must match `add_button` second parameter.
+/// Toast button `arguments`; must match `ToastButton::action`.
 const TOAST_ACTION_STILL: &str = "still";
 const TOAST_ACTION_SNOOZE: &str = "snooze";
 const TOAST_ACTION_MINUS_15: &str = "minus_15";
 const TOAST_ACTION_DONE: &str = "done";
 const TOAST_ACTION_PLUS_15: &str = "plus_15";
+
+static AUMID_READY: OnceLock<()> = OnceLock::new();
 
 /// Windows toast action labels are short; keep total length modest.
 fn still_button_label(body: &str) -> String {
@@ -103,27 +108,89 @@ fn trim_for_toast_line(s: &str, max_chars: usize) -> String {
 }
 
 fn toast_app_id(app: &AppHandle) -> String {
-    let identifier = app.config().identifier.clone();
-    let Ok(exe) = std::env::current_exe() else {
-        return identifier;
-    };
-    let Some(dir) = exe.parent() else {
-        return identifier;
-    };
-    let path = dir.to_string_lossy();
-    if path.ends_with(r"target\debug")
-        || path.ends_with("target/debug")
-        || path.ends_with(r"target\release")
-        || path.ends_with("target/release")
-    {
-        Toast::POWERSHELL_APP_ID.to_string()
-    } else {
-        identifier
+    app.config().identifier.clone()
+}
+
+fn resolve_notification_icon(app: &AppHandle) -> PathBuf {
+    if let Ok(dir) = app.path().resource_dir() {
+        let ico = dir.join("icons/icon.ico");
+        if ico.exists() {
+            return ico;
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            for rel in ["icons/icon.ico", "../icons/icon.ico"] {
+                let p = parent.join(rel);
+                if p.exists() {
+                    return p;
+                }
+            }
+        }
+    }
+    PathBuf::from("icons/icon.ico")
+}
+
+fn ensure_aumid(app: &AppHandle) {
+    AUMID_READY.get_or_init(|| {
+        let app_id = toast_app_id(app);
+        let icon = resolve_notification_icon(app);
+        if let Err(e) = aumid::ensure_registered(&app_id, "AreYouFocused", &icon) {
+            tracing::warn!("AUMID registry setup failed (toasts may stack or mis-activate): {e}");
+        }
+    });
+}
+
+fn focus_capture_on_main(app: &AppHandle) {
+    let h = app.clone();
+    if let Err(e) = app.run_on_main_thread(move || {
+        window_util::show_and_focus_capture(&h);
+    }) {
+        tracing::warn!("toast activation: run_on_main_thread failed: {e}");
+    }
+}
+
+fn dispatch_toast_action(app: &AppHandle, action: Option<&str>) {
+    match action {
+        Some(TOAST_ACTION_STILL) => {
+            if let Err(e) = still_from_toast(app) {
+                tracing::warn!("toast still: {e}");
+            }
+        }
+        Some(TOAST_ACTION_SNOOZE) => {
+            if let Err(e) = snooze_from_toast(app) {
+                tracing::warn!("toast snooze: {e}");
+            }
+        }
+        Some(TOAST_ACTION_MINUS_15) => {
+            if let Err(e) = minus_15_from_toast(app) {
+                tracing::warn!("toast minus_15: {e}");
+            }
+        }
+        Some(TOAST_ACTION_DONE) => {
+            if let Err(e) = done_from_toast(app) {
+                tracing::warn!("toast done: {e}");
+            }
+        }
+        Some(TOAST_ACTION_PLUS_15) => {
+            if let Err(e) = plus_15_from_toast(app) {
+                tracing::warn!("toast plus_15: {e}");
+            }
+        }
+        Some(TOAST_LAUNCH_FOCUS) | None => {
+            focus_capture_on_main(app);
+        }
+        Some(other) => {
+            tracing::debug!("toast activation unknown action {other:?}, focusing window");
+            focus_capture_on_main(app);
+        }
     }
 }
 
 impl PingNotifier for WindowsNotifier {
     fn notify_ping_due(&self, app: &AppHandle) -> Result<(), AppError> {
+        ensure_aumid(app);
+
         let (latest_label, toast_secondary) = {
             let state = app.state::<AppState>();
             let mut db = state.db.lock().unwrap_or_else(|p| p.into_inner());
@@ -137,6 +204,13 @@ impl PingNotifier for WindowsNotifier {
                     let preview = trim_for_toast_line(&subj, 90);
                     format!("Planned time is up — still doing this? “{preview}”")
                 }
+                NextPingKind::Overdue => {
+                    let subj = repo::get_planned_check_subject(conn)?
+                        .or_else(|| repo::latest_capture_body(conn).ok().flatten())
+                        .unwrap_or_default();
+                    let preview = trim_for_toast_line(&subj, 90);
+                    format!("Past your planned finish — still on this? “{preview}”")
+                }
                 NextPingKind::Standard => "What are you doing right now?".to_string(),
             };
             (latest_label, toast_secondary)
@@ -145,86 +219,53 @@ impl PingNotifier for WindowsNotifier {
         let app_id = toast_app_id(app);
         let app_for_activation = app.clone();
 
-        let mut toast_builder = Toast::new(&app_id)
-            .title("AreYouFocused")
-            .text2(&toast_secondary)
-            .duration(Duration::Short);
-
-        toast_builder = toast_builder.add_button("Snooze 10 min", TOAST_ACTION_SNOOZE);
-        toast_builder =
-            toast_builder.add_button("−15 min", TOAST_ACTION_MINUS_15);
-        toast_builder = toast_builder.add_button("Done", TOAST_ACTION_DONE);
-        toast_builder = toast_builder.add_button("+15 min", TOAST_ACTION_PLUS_15);
+        let mut buttons = vec![
+            ToastButton {
+                label: "Snooze 10 min".to_string(),
+                action: TOAST_ACTION_SNOOZE.to_string(),
+            },
+            ToastButton {
+                label: "−15 min".to_string(),
+                action: TOAST_ACTION_MINUS_15.to_string(),
+            },
+            ToastButton {
+                label: "Done".to_string(),
+                action: TOAST_ACTION_DONE.to_string(),
+            },
+            ToastButton {
+                label: "+15 min".to_string(),
+                action: TOAST_ACTION_PLUS_15.to_string(),
+            },
+        ];
         if let Some(ref label) = latest_label {
-            toast_builder = toast_builder.add_button(label, TOAST_ACTION_STILL);
+            buttons.push(ToastButton {
+                label: label.clone(),
+                action: TOAST_ACTION_STILL.to_string(),
+            });
         }
 
-        toast_builder
-            .on_activated(move |action| {
-                let app = app_for_activation.clone();
-                match action.as_deref() {
-                    Some(TOAST_ACTION_STILL) => {
-                        let app_run = app.clone();
-                        if let Err(e) = app.run_on_main_thread(move || {
-                            if let Err(e) = still_from_toast(&app_run) {
-                                tracing::warn!("toast still: {e}");
-                            }
-                        }) {
-                            tracing::warn!("toast activation: run_on_main_thread failed: {e}");
-                        }
-                    }
-                    Some(TOAST_ACTION_SNOOZE) => {
-                        let app_run = app.clone();
-                        if let Err(e) = app.run_on_main_thread(move || {
-                            if let Err(e) = snooze_from_toast(&app_run) {
-                                tracing::warn!("toast snooze: {e}");
-                            }
-                        }) {
-                            tracing::warn!("toast activation: run_on_main_thread failed: {e}");
-                        }
-                    }
-                    Some(TOAST_ACTION_MINUS_15) => {
-                        let app_run = app.clone();
-                        if let Err(e) = app.run_on_main_thread(move || {
-                            if let Err(e) = minus_15_from_toast(&app_run) {
-                                tracing::warn!("toast minus_15: {e}");
-                            }
-                        }) {
-                            tracing::warn!("toast activation: run_on_main_thread failed: {e}");
-                        }
-                    }
-                    Some(TOAST_ACTION_DONE) => {
-                        let app_run = app.clone();
-                        if let Err(e) = app.run_on_main_thread(move || {
-                            if let Err(e) = done_from_toast(&app_run) {
-                                tracing::warn!("toast done: {e}");
-                            }
-                        }) {
-                            tracing::warn!("toast activation: run_on_main_thread failed: {e}");
-                        }
-                    }
-                    Some(TOAST_ACTION_PLUS_15) => {
-                        let app_run = app.clone();
-                        if let Err(e) = app.run_on_main_thread(move || {
-                            if let Err(e) = plus_15_from_toast(&app_run) {
-                                tracing::warn!("toast plus_15: {e}");
-                            }
-                        }) {
-                            tracing::warn!("toast activation: run_on_main_thread failed: {e}");
-                        }
-                    }
-                    _ => {
-                        let h2 = app.clone();
-                        if let Err(e) = app.run_on_main_thread(move || {
-                            window_util::show_and_focus_capture(&h2);
-                        }) {
-                            tracing::warn!("toast activation: run_on_main_thread failed: {e}");
-                        }
-                    }
-                }
-                Ok(())
-            })
-            .show()
-            .map_err(|e| AppError::Notify(e.to_string()))
+        let content = PingToastContent {
+            title: "AreYouFocused".to_string(),
+            line2: toast_secondary,
+            buttons,
+        };
+
+        win_toast::show_ping_toast(&app_id, &content, move |action| {
+            let app = app_for_activation.clone();
+            let app_main = app.clone();
+            if let Err(e) = app.run_on_main_thread(move || {
+                dispatch_toast_action(&app_main, action.as_deref());
+            }) {
+                tracing::warn!("toast activation: run_on_main_thread failed: {e}");
+            }
+            Ok(())
+        })
+        .map_err(|e| AppError::Notify(e.to_string()))
     }
+}
+
+/// Call once at startup so the first ping does not pay registry latency.
+#[cfg(target_os = "windows")]
+pub fn init_notifications(app: &AppHandle) {
+    ensure_aumid(app);
 }
