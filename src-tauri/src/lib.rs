@@ -49,6 +49,7 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             platform::init_notifications(&app.handle());
 
+            #[cfg(desktop)]
             if let Some(win) = app.get_webview_window("capture") {
                 let _ = win.set_resizable(false);
             }
@@ -56,12 +57,20 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if window.label() != "capture" {
+            #[cfg(not(desktop))]
+            {
+                let _ = (window, event);
                 return;
             }
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+            #[cfg(desktop)]
+            {
+                if window.label() != "capture" {
+                    return;
+                }
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![

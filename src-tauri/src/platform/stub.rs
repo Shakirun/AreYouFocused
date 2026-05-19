@@ -1,12 +1,14 @@
 use super::{DailyReminderNotifier, PingNotifier};
 use tauri::AppHandle;
 
+/// Non-Windows notifier (Android/iOS MVP): logs only. Scheduler still emits
+/// in-app `ping-due` events; native notification channels are future work.
 #[cfg_attr(windows, allow(dead_code))]
 pub struct StubNotifier;
 
 impl PingNotifier for StubNotifier {
     fn notify_ping_due(&self, _app: &AppHandle) -> Result<(), crate::error::AppError> {
-        tracing::info!("ping due (stub notifier)");
+        tracing::info!("ping due (stub notifier — no OS toast on this platform)");
         Ok(())
     }
 }

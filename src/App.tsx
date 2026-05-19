@@ -11,6 +11,8 @@ import {
   MAX_WINDOW_INNER_HEIGHT,
   useFitWindowHeight,
 } from "./useFitWindowHeight";
+import { MobileBottomNav } from "./MobileBottomNav";
+import { useMobileLayout } from "./useMobileLayout";
 
 type SchedulerStatus = {
   nextPingAtUnix: number | null;
@@ -354,6 +356,7 @@ function stillAriaLabel(body: string): string {
 /** Quick-capture shell. All user-facing strings are English until i18n (see /I18N.md). */
 export default function App() {
   const mainRef = useRef<HTMLElement>(null);
+  const isMobileLayout = useMobileLayout();
   const [layoutAccordionVersion, setLayoutAccordionVersion] = useState(0);
 
   const labelId = useId();
@@ -1120,26 +1123,36 @@ export default function App() {
     currentActivity?.durationMinutes != null &&
     currentActivity.durationMinutes > 0;
 
-  useFitWindowHeight(mainRef, [
-    mainTab,
-    layoutAccordionVersion,
-    gapFillPrompt != null,
-    showCurrentActivity,
-    showManage,
-    awaitingFollowup,
-    recentCaptures.length,
-    digest.length,
-    quickPicks.length,
-    dailyDraft != null,
-    dailyReminders.length,
-  ]);
+  useFitWindowHeight(
+    mainRef,
+    [
+      mainTab,
+      layoutAccordionVersion,
+      gapFillPrompt != null,
+      showCurrentActivity,
+      showManage,
+      awaitingFollowup,
+      recentCaptures.length,
+      digest.length,
+      quickPicks.length,
+      dailyDraft != null,
+      dailyReminders.length,
+    ],
+    !isMobileLayout,
+  );
 
   return (
+    <>
     <main
       ref={mainRef}
-      className="mx-auto flex max-w-md flex-col overflow-hidden px-4 py-5"
-      style={{ maxHeight: MAX_WINDOW_INNER_HEIGHT }}
+      className={`mx-auto flex w-full flex-col overflow-hidden px-4 ${
+        isMobileLayout
+          ? "app-mobile-shell min-h-dvh max-w-none py-3 pb-[calc(4.75rem+env(safe-area-inset-bottom))]"
+          : "max-w-md py-5"
+      }`}
+      style={isMobileLayout ? undefined : { maxHeight: MAX_WINDOW_INNER_HEIGHT }}
     >
+      {!isMobileLayout ? (
       <nav
         className="flex shrink-0 gap-1 rounded-xl border border-brand/20 bg-white/70 p-1 shadow-sm"
         role="tablist"
@@ -1182,8 +1195,9 @@ export default function App() {
           Routines
         </button>
       </nav>
+      ) : null}
 
-      <div className="app-tab-scroll flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+      <div className="app-tab-scroll flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-y-contain">
       {mainTab === "capture" ? (
         <section
           className={`capture-status-card flex flex-col gap-0 p-3.5 ${
@@ -1378,8 +1392,9 @@ export default function App() {
               Ping schedule
             </h1>
             <p className="text-xs text-ink/50">
-              Closing the window hides it to the system tray; use the tray
-              icon, menu, or tap the ping notification to show this window again.
+              {isMobileLayout
+                ? "Random and routine pings run while the app is active. Allow notifications when native Android support lands."
+                : "Closing the window hides it to the system tray; use the tray icon, menu, or tap the ping notification to show this window again."}
             </p>
             {lastPingAt ? (
               <p className="text-xs text-ink/55" aria-live="polite">
@@ -2570,5 +2585,9 @@ export default function App() {
         </div>
       ) : null}
     </main>
+    {isMobileLayout ? (
+      <MobileBottomNav activeTab={mainTab} onTabChange={setMainTab} />
+    ) : null}
+    </>
   );
 }

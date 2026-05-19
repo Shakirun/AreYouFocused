@@ -28,11 +28,14 @@ export function useFitWindowHeight(
   contentRef: RefObject<HTMLElement | null>,
   /** Re-measure when tab, accordion, or other layout-affecting state changes. */
   resizeDeps: readonly unknown[] = [],
+  /** Desktop fixed-window shell only; mobile uses full viewport. */
+  enabled = true,
 ) {
   const lastApplied = useRef(0);
   const debounceTimer = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
 
     async function apply() {
@@ -87,5 +90,5 @@ export function useFitWindowHeight(
       document.removeEventListener("toggle", onToggle, true);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- contentRef is stable; resizeDeps drive re-measure
-  }, [contentRef, ...resizeDeps]);
+  }, [contentRef, enabled, ...resizeDeps]);
 }

@@ -41,6 +41,23 @@
     scrollbar-gutter: stable;
   }
 
+  .app-mobile-shell {
+    touch-action: manipulation;
+  }
+
+  .mobile-bottom-nav {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  @media (max-width: 767px), (pointer: coarse) and (max-width: 1024px) {
+    html,
+    body,
+    #root {
+      min-height: 100dvh;
+      height: 100dvh;
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     *,
     *::before,
