@@ -7,7 +7,7 @@ const MIN_INNER_HEIGHT = 320;
  * Cap fit-to-content growth so tall tabs (e.g. many daily reminders) scroll
  * inside the shell instead of growing the window without bound.
  */
-export const MAX_WINDOW_INNER_HEIGHT = 720;
+export const MAX_WINDOW_INNER_HEIGHT = 770;
 /** Avoid a persistent 1px scrollbar from rounding / shadows. */
 const HEIGHT_SLOP_PX = 12;
 

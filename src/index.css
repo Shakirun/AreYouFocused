@@ -19,7 +19,7 @@
 @layer base {
   :root {
     /* Keep in sync with MAX_WINDOW_INNER_HEIGHT in useFitWindowHeight.ts */
-    --app-max-inner-height: 720px;
+    --app-max-inner-height: 770px;
   }
 
   details:not([open]) {
