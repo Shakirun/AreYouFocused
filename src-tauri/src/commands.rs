@@ -10,7 +10,10 @@ use rusqlite::Connection;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, State};
+#[cfg(desktop)]
+use tauri::{WebviewUrl, WebviewWindowBuilder};
+#[cfg(desktop)]
 use tauri::webview::PageLoadEvent;
 use tauri_plugin_dialog::DialogExt;
 
@@ -401,43 +404,52 @@ pub async fn history_report_print(
     since_unix: i64,
     until_unix: i64,
 ) -> Result<(), AppError> {
-    let report = build_report_locked(&state, since_unix, until_unix)?;
-    let html = export::report_to_html(&report);
-
-    let temp_dir = app
-        .path()
-        .temp_dir()
-        .map_err(|e| AppError::Export(e.to_string()))?;
-    let html_path = temp_dir.join(format!(
-        "areyoufocused-report-{}.html",
-        unix_now()
-    ));
-    std::fs::write(&html_path, html).map_err(|e| AppError::Export(e.to_string()))?;
-
-    let file_url = tauri::Url::from_file_path(&html_path)
-        .map_err(|_| AppError::Export("could not build report file URL".into()))?;
-
-    if let Some(existing) = app.get_webview_window(HISTORY_REPORT_WINDOW_LABEL) {
-        let _ = existing.close();
+    #[cfg(not(desktop))]
+    {
+        let _ = (app, state, since_unix, until_unix);
+        return Err(AppError::Export("PDF print is desktop-only".into()));
     }
 
-    WebviewWindowBuilder::new(
-        &app,
-        HISTORY_REPORT_WINDOW_LABEL,
-        WebviewUrl::External(file_url),
-    )
-    .title("AreYouFocused — History report")
-    .inner_size(920.0, 720.0)
-    .center()
-    .on_page_load(|window, payload| {
-        if payload.event() == PageLoadEvent::Finished {
-            let _ = window.eval("window.print();");
-        }
-    })
-    .build()
-    .map_err(|e| AppError::Export(e.to_string()))?;
+    #[cfg(desktop)]
+    {
+        let report = build_report_locked(&state, since_unix, until_unix)?;
+        let html = export::report_to_html(&report);
 
-    Ok(())
+        let temp_dir = app
+            .path()
+            .temp_dir()
+            .map_err(|e| AppError::Export(e.to_string()))?;
+        let html_path = temp_dir.join(format!(
+            "areyoufocused-report-{}.html",
+            unix_now()
+        ));
+        std::fs::write(&html_path, html).map_err(|e| AppError::Export(e.to_string()))?;
+
+        let file_url = tauri::Url::from_file_path(&html_path)
+            .map_err(|_| AppError::Export("could not build report file URL".into()))?;
+
+        if let Some(existing) = app.get_webview_window(HISTORY_REPORT_WINDOW_LABEL) {
+            let _ = existing.close();
+        }
+
+        WebviewWindowBuilder::new(
+            &app,
+            HISTORY_REPORT_WINDOW_LABEL,
+            WebviewUrl::External(file_url),
+        )
+        .title("AreYouFocused — History report")
+        .inner_size(920.0, 720.0)
+        .center()
+        .on_page_load(|window, payload| {
+            if payload.event() == PageLoadEvent::Finished {
+                let _ = window.eval("window.print();");
+            }
+        })
+        .build()
+        .map_err(|e| AppError::Export(e.to_string()))?;
+
+        Ok(())
+    }
 }
 
 #[derive(serde::Serialize)]

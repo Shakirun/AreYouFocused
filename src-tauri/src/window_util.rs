@@ -7,6 +7,7 @@ pub fn show_and_focus_capture<R: Runtime>(app: &AppHandle<R>) {
         tracing::debug!("window_util: no webview window labeled capture");
         return;
     };
+    #[cfg(desktop)]
     let _ = win.unminimize();
     let _ = win.show();
     let _ = win.set_focus();
