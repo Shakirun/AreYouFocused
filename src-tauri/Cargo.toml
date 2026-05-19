@@ -28,6 +28,8 @@ thiserror = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
+rust_xlsxwriter = "0.79"
+tauri-plugin-dialog = "2"
 
 [target.'cfg(windows)'.dependencies]
 tauri-winrt-notification = "0.7"

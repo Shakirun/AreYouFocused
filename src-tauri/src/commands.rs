@@ -1,10 +1,13 @@
 use crate::db::repo::{self, ShortenGapInfo};
 use crate::error::AppError;
+use crate::export::{self, HistoryReport};
 use crate::AppState;
 use rusqlite::Connection;
 use serde::Deserialize;
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::State;
+use tauri::{AppHandle, State};
+use tauri_plugin_dialog::DialogExt;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -295,6 +298,90 @@ pub fn list_activity_digest(
             },
         )
         .collect())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportHistoryInput {
+    pub format: String,
+    pub since_unix: i64,
+    pub until_unix: i64,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportHistoryResult {
+    pub saved: bool,
+    pub path: Option<String>,
+}
+
+fn build_report_locked(
+    state: &State<'_, AppState>,
+    since_unix: i64,
+    until_unix: i64,
+) -> Result<HistoryReport, AppError> {
+    let db = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = &*db;
+    export::build_history_report(conn, since_unix, until_unix, unix_now())
+}
+
+/// Save history report as CSV or XLSX via native save dialog.
+#[tauri::command]
+pub fn export_history_file(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    input: ExportHistoryInput,
+) -> Result<ExportHistoryResult, AppError> {
+    let report = build_report_locked(&state, input.since_unix, input.until_unix)?;
+    let (title, filter_name, ext): (&str, &str, &[&str]) = match input.format.as_str() {
+        "csv" => ("Save history as CSV", "CSV", &["csv"]),
+        "xlsx" => ("Save history as Excel", "Excel", &["xlsx"]),
+        other => {
+            return Err(AppError::Export(format!(
+                "unsupported format: {other} (use csv or xlsx)"
+            )))
+        }
+    };
+
+    let path = app
+        .dialog()
+        .file()
+        .set_title(title)
+        .add_filter(filter_name, ext)
+        .blocking_save_file();
+
+    let Some(path) = path else {
+        return Ok(ExportHistoryResult {
+            saved: false,
+            path: None,
+        });
+    };
+
+    let path_buf: PathBuf = path.into_path().map_err(|e| AppError::Export(e.to_string()))?;
+    match input.format.as_str() {
+        "csv" => {
+            let csv = export::report_to_csv(&report);
+            std::fs::write(&path_buf, csv).map_err(|e| AppError::Export(e.to_string()))?;
+        }
+        "xlsx" => export::write_xlsx(&report, &path_buf)?,
+        _ => unreachable!(),
+    }
+
+    Ok(ExportHistoryResult {
+        saved: true,
+        path: Some(path_buf.to_string_lossy().into_owned()),
+    })
+}
+
+/// Print-ready HTML for the selected period (use system Print → Save as PDF).
+#[tauri::command]
+pub fn history_report_html(
+    state: State<'_, AppState>,
+    since_unix: i64,
+    until_unix: i64,
+) -> Result<String, AppError> {
+    let report = build_report_locked(&state, since_unix, until_unix)?;
+    Ok(export::report_to_html(&report))
 }
 
 /// Top distinct capture texts by frequency (for quick-insert chips in the capture UI).

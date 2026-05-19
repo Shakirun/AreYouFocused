@@ -32,6 +32,13 @@ type MainTab = "capture" | "history" | "schedule";
 
 type DigestPeriod = "day" | "week" | "month" | "all";
 
+type ExportRangePreset = "today" | "this_week" | "last_7" | "custom";
+
+type ExportHistoryResult = {
+  saved: boolean;
+  path?: string | null;
+};
+
 type QuickPickRow = {
   body: string;
   count: number;
@@ -95,6 +102,78 @@ function digestSinceUnix(period: DigestPeriod): number {
       return _exhaustive;
     }
   }
+}
+
+function todayDateInputValue(d: Date = new Date()): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function startOfLocalDayUnix(d: Date = new Date()): number {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return Math.floor(x.getTime() / 1000);
+}
+
+/** Week starts Monday (local). */
+function startOfLocalWeekUnix(d: Date = new Date()): number {
+  const x = new Date(d);
+  const day = x.getDay();
+  const diff = (day + 6) % 7;
+  x.setDate(x.getDate() - diff);
+  x.setHours(0, 0, 0, 0);
+  return Math.floor(x.getTime() / 1000);
+}
+
+function exportRangeUnixBounds(
+  preset: ExportRangePreset,
+  customStart: string,
+  customEnd: string,
+): { sinceUnix: number; untilUnix: number } {
+  const untilUnix = Math.floor(Date.now() / 1000);
+  switch (preset) {
+    case "today":
+      return { sinceUnix: startOfLocalDayUnix(), untilUnix };
+    case "this_week":
+      return { sinceUnix: startOfLocalWeekUnix(), untilUnix };
+    case "last_7":
+      return { sinceUnix: untilUnix - 7 * 86_400, untilUnix };
+    case "custom": {
+      const start = customStart
+        ? new Date(`${customStart}T00:00:00`)
+        : new Date(0);
+      const end = customEnd
+        ? new Date(`${customEnd}T23:59:59`)
+        : new Date(untilUnix * 1000);
+      return {
+        sinceUnix: Math.floor(start.getTime() / 1000),
+        untilUnix: Math.floor(end.getTime() / 1000),
+      };
+    }
+    default: {
+      const _exhaustive: never = preset;
+      return _exhaustive;
+    }
+  }
+}
+
+function formatExportRangeLabel(
+  preset: ExportRangePreset,
+  customStart: string,
+  customEnd: string,
+): string {
+  const { sinceUnix, untilUnix } = exportRangeUnixBounds(
+    preset,
+    customStart,
+    customEnd,
+  );
+  const opts: Intl.DateTimeFormatOptions = {
+    dateStyle: "medium",
+    timeStyle: "short",
+  };
+  return `${new Date(sinceUnix * 1000).toLocaleString(undefined, opts)} → ${new Date(untilUnix * 1000).toLocaleString(undefined, opts)}`;
 }
 
 function formatSegmentMinutes(m: number): string {
@@ -200,7 +279,8 @@ function stillAriaLabel(body: string): string {
 
 /** Quick-capture shell. All user-facing strings are English until i18n (see /I18N.md). */
 export default function App() {
-  useFitWindowHeight();
+  const mainRef = useRef<HTMLElement>(null);
+  const [scheduleAccordionVersion, setScheduleAccordionVersion] = useState(0);
 
   const labelId = useId();
   const quickPicksLegendId = useId();
@@ -249,6 +329,16 @@ export default function App() {
   const [digestPeriod, setDigestPeriod] = useState<DigestPeriod>("week");
   const [digest, setDigest] = useState<ActivityDigestRow[]>([]);
   const [digestCopied, setDigestCopied] = useState(false);
+  const [exportPreset, setExportPreset] =
+    useState<ExportRangePreset>("last_7");
+  const [exportCustomStart, setExportCustomStart] = useState(() =>
+    todayDateInputValue(),
+  );
+  const [exportCustomEnd, setExportCustomEnd] = useState(() =>
+    todayDateInputValue(),
+  );
+  const [exportStatus, setExportStatus] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
   const [adjustingMinus, setAdjustingMinus] = useState(false);
   const [adjustingPlus, setAdjustingPlus] = useState(false);
   const [markingDone, setMarkingDone] = useState(false);
@@ -667,6 +757,60 @@ export default function App() {
     }
   }
 
+  const runHistoryExport = useCallback(
+    async (format: "csv" | "xlsx" | "pdf") => {
+      setExporting(true);
+      setExportStatus(null);
+      const { sinceUnix, untilUnix } = exportRangeUnixBounds(
+        exportPreset,
+        exportCustomStart,
+        exportCustomEnd,
+      );
+      try {
+        if (format === "pdf") {
+          const html = await invoke<string>("history_report_html", {
+            sinceUnix,
+            untilUnix,
+          });
+          const win = window.open(
+            "",
+            "_blank",
+            "noopener,noreferrer,width=920,height=720",
+          );
+          if (!win) {
+            setExportStatus(
+              "Pop-up blocked — allow pop-ups to print or save as PDF.",
+            );
+            return;
+          }
+          win.document.write(html);
+          win.document.close();
+          win.focus();
+          win.print();
+          setExportStatus(
+            "Print dialog opened — choose “Save as PDF” or a printer.",
+          );
+          return;
+        }
+        const result = await invoke<ExportHistoryResult>("export_history_file", {
+          input: { format, sinceUnix, untilUnix },
+        });
+        if (!result.saved) {
+          setExportStatus("Export cancelled.");
+          return;
+        }
+        setExportStatus(
+          result.path ? `Saved to ${result.path}` : "Report saved.",
+        );
+      } catch (e) {
+        setExportStatus(e instanceof Error ? e.message : String(e));
+      } finally {
+        setExporting(false);
+      }
+    },
+    [exportPreset, exportCustomStart, exportCustomEnd],
+  );
+
   async function copyDigestSummary() {
     if (digest.length === 0) return;
     const lines = digest.map((row) => {
@@ -763,8 +907,23 @@ export default function App() {
     currentActivity?.durationMinutes != null &&
     currentActivity.durationMinutes > 0;
 
+  useFitWindowHeight(mainRef, [
+    mainTab,
+    scheduleAccordionVersion,
+    gapFillPrompt != null,
+    showCurrentActivity,
+    showManage,
+    awaitingFollowup,
+    recentCaptures.length,
+    digest.length,
+    quickPicks.length,
+  ]);
+
   return (
-    <main className="mx-auto flex max-w-md flex-col gap-3 px-4 py-5">
+    <main
+      ref={mainRef}
+      className="mx-auto flex max-w-md flex-col gap-3 px-4 py-5"
+    >
       <nav
         className="flex gap-1 rounded-xl border border-brand/20 bg-white/70 p-1 shadow-sm"
         role="tablist"
@@ -1029,25 +1188,22 @@ export default function App() {
             ) : null}
           </header>
 
-          <details className="rounded-lg border border-brand/20 bg-white/80 px-3 py-2 shadow-sm open:pb-3">
+          <details
+            className="rounded-lg border border-brand/20 bg-white/80 px-3 py-2 shadow-sm open:pb-3"
+            onToggle={() => setScheduleAccordionVersion((v) => v + 1)}
+          >
             <summary className="flex cursor-pointer list-none select-none items-center gap-2 text-sm font-medium text-ink [&::-webkit-details-marker]:hidden">
               <span className="flex-1">Random ping</span>
-              <span
-                className="group/help relative flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-brand/25 text-[0.65rem] font-semibold text-ink/60"
-                role="img"
+              <button
+                type="button"
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-brand/25 text-[0.65rem] font-semibold text-ink/60"
                 aria-label="Random ping help"
+                title='How often to ping when you chose "No idea" — no planned duration on the capture.'
                 onClick={(e) => e.preventDefault()}
                 onKeyDown={(e) => e.stopPropagation()}
               >
                 ?
-                <span
-                  role="tooltip"
-                  className="pointer-events-none absolute right-0 top-full z-10 mt-1.5 hidden w-56 rounded-md border border-brand/25 bg-white px-2.5 py-2 text-xs font-normal leading-snug text-ink/80 shadow-lg group-hover/help:block group-focus-within/help:block"
-                >
-                  How often to ping when you chose &ldquo;No idea&rdquo; — no planned
-                  duration on the capture.
-                </span>
-              </span>
+              </button>
             </summary>
             <div className="mt-3 flex flex-col gap-3">
               <label className="flex cursor-pointer items-center gap-2 text-sm text-ink/85">
@@ -1118,25 +1274,22 @@ export default function App() {
             </div>
           </details>
 
-          <details className="rounded-lg border border-brand/20 bg-white/80 px-3 py-2 shadow-sm open:pb-3">
+          <details
+            className="rounded-lg border border-brand/20 bg-white/80 px-3 py-2 shadow-sm open:pb-3"
+            onToggle={() => setScheduleAccordionVersion((v) => v + 1)}
+          >
             <summary className="flex cursor-pointer list-none select-none items-center gap-2 text-sm font-medium text-ink [&::-webkit-details-marker]:hidden">
               <span className="flex-1">Overdue ping</span>
-              <span
-                className="group/help relative flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-brand/25 text-[0.65rem] font-semibold text-ink/60"
-                role="img"
+              <button
+                type="button"
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-brand/25 text-[0.65rem] font-semibold text-ink/60"
                 aria-label="Overdue ping help"
+                title="How often to ping after your planned finish time passed but you haven't marked the task done."
                 onClick={(e) => e.preventDefault()}
                 onKeyDown={(e) => e.stopPropagation()}
               >
                 ?
-                <span
-                  role="tooltip"
-                  className="pointer-events-none absolute right-0 top-full z-10 mt-1.5 hidden w-56 rounded-md border border-brand/25 bg-white px-2.5 py-2 text-xs font-normal leading-snug text-ink/80 shadow-lg group-hover/help:block group-focus-within/help:block"
-                >
-                  How often to ping after your planned finish time passed but you
-                  haven&apos;t marked the task done.
-                </span>
-              </span>
+              </button>
             </summary>
             <div className="mt-3 flex flex-col gap-3">
               <label className="flex cursor-pointer items-center gap-2 text-sm text-ink/85">
@@ -1293,6 +1446,104 @@ export default function App() {
                 ))}
               </ul>
             )}
+          </div>
+
+          <div className="flex flex-col gap-2 rounded-lg border border-brand/20 bg-white/90 p-3">
+            <p className="text-xs font-medium uppercase tracking-wide text-ink/55">
+              Export report
+            </p>
+            <p className="text-xs leading-snug text-ink/60">
+              Overall totals plus a chronological timeline for the selected
+              range. PDF opens the system print dialog (Save as PDF).
+            </p>
+            <div
+              className="flex flex-wrap gap-1.5"
+              role="group"
+              aria-label="Export date range"
+            >
+              {(
+                [
+                  ["today", "Today"],
+                  ["this_week", "This week"],
+                  ["last_7", "Last 7 days"],
+                  ["custom", "Custom"],
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  disabled={exporting}
+                  aria-pressed={exportPreset === id}
+                  onClick={() => setExportPreset(id)}
+                  className={`cursor-pointer rounded-full border px-2.5 py-1 text-xs font-medium transition-colors duration-interaction focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-50 ${
+                    exportPreset === id
+                      ? "border-brand bg-brand/15 text-ink"
+                      : "border-brand/25 bg-white text-ink/80 hover:border-brand/35"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {exportPreset === "custom" ? (
+              <div className="flex flex-wrap items-end gap-2">
+                <label className="flex flex-col gap-0.5 text-xs text-ink/70">
+                  From
+                  <input
+                    type="date"
+                    value={exportCustomStart}
+                    disabled={exporting}
+                    onChange={(e) => setExportCustomStart(e.target.value)}
+                    className="cursor-pointer rounded-md border border-brand/25 bg-white px-2 py-1 text-sm text-ink"
+                  />
+                </label>
+                <label className="flex flex-col gap-0.5 text-xs text-ink/70">
+                  To
+                  <input
+                    type="date"
+                    value={exportCustomEnd}
+                    disabled={exporting}
+                    onChange={(e) => setExportCustomEnd(e.target.value)}
+                    className="cursor-pointer rounded-md border border-brand/25 bg-white px-2 py-1 text-sm text-ink"
+                  />
+                </label>
+              </div>
+            ) : null}
+            <p className="text-[0.65rem] text-ink/50 tabular-nums">
+              {formatExportRangeLabel(
+                exportPreset,
+                exportCustomStart,
+                exportCustomEnd,
+              )}
+            </p>
+            <div
+              className="flex flex-wrap gap-2"
+              role="group"
+              aria-label="Export format"
+            >
+              {(
+                [
+                  ["csv", "CSV"],
+                  ["xlsx", "XLSX"],
+                  ["pdf", "PDF"],
+                ] as const
+              ).map(([fmt, label]) => (
+                <button
+                  key={fmt}
+                  type="button"
+                  disabled={exporting}
+                  onClick={() => void runHistoryExport(fmt)}
+                  className="cursor-pointer rounded-md border border-brand/30 bg-white px-3 py-1.5 text-xs font-medium text-ink/90 transition-colors duration-interaction hover:bg-brand/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {exporting ? "Exporting…" : label}
+                </button>
+              ))}
+            </div>
+            {exportStatus ? (
+              <p className="text-xs text-ink/65" role="status">
+                {exportStatus}
+              </p>
+            ) : null}
           </div>
 
           <div className="flex flex-col gap-2">

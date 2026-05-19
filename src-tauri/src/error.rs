@@ -17,6 +17,8 @@ pub enum AppError {
     InvalidPlannedDuration,
     #[error("notification: {0}")]
     Notify(String),
+    #[error("export: {0}")]
+    Export(String),
 }
 
 impl serde::Serialize for AppError {

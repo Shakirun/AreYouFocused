@@ -2,6 +2,7 @@ pub mod commands;
 pub mod db;
 pub mod domain;
 pub mod error;
+pub mod export;
 pub mod platform;
 mod scheduler;
 #[cfg(desktop)]
@@ -22,6 +23,7 @@ pub fn run() {
         .init();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let dir = app
                 .path()
@@ -76,6 +78,8 @@ pub fn run() {
             commands::list_recent_captures,
             commands::list_activity_digest,
             commands::list_top_quick_picks,
+            commands::export_history_file,
+            commands::history_report_html,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

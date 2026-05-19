@@ -923,6 +923,34 @@ pub fn query_activity_digest(
     Ok(out)
 }
 
+/// Captures in `[since_unix, until_unix]` (inclusive), oldest first — for timeline exports.
+pub fn query_captures_in_range(
+    conn: &Connection,
+    since_unix: i64,
+    until_unix: i64,
+) -> rusqlite::Result<Vec<(String, i64, Option<i64>, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT body, created_at_unix, duration_minutes,
+                COALESCE(thread_root, body) AS tr
+         FROM captures
+         WHERE created_at_unix >= ?1 AND created_at_unix <= ?2
+         ORDER BY created_at_unix ASC",
+    )?;
+    let rows = stmt.query_map(params![since_unix, until_unix], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, Option<i64>>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
 /// Max quick-pick chips shown in the capture UI (distinct bodies by frequency).
 pub const TOP_QUICK_PICKS_CAP: u32 = 5;
 
@@ -1101,6 +1129,19 @@ mod tests {
             get_next_ping_at_unix(&conn).unwrap().unwrap(),
             now + SNOOZE_MINUTES * 60
         );
+    }
+
+    #[test]
+    fn query_captures_in_range_orders_oldest_first() {
+        let conn = open_memory().expect("db");
+        let mut rng = StdRng::seed_from_u64(99);
+        persist_capture(&conn, "a", 100, &mut rng, Some(10)).expect("a");
+        persist_capture(&conn, "b", 200, &mut rng, None).expect("b");
+        persist_capture(&conn, "c", 50, &mut rng, None).expect("out of range");
+        let rows = query_captures_in_range(&conn, 90, 210).expect("range");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, "a");
+        assert_eq!(rows[1].0, "b");
     }
 
     #[test]
