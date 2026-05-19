@@ -34,7 +34,7 @@ type ActivityDigestRow = {
   captureCount: number;
 };
 
-type MainTab = "capture" | "history" | "schedule";
+type MainTab = "capture" | "history" | "schedule" | "routines";
 
 type DigestPeriod = "day" | "week" | "month" | "all";
 
@@ -351,7 +351,7 @@ function stillAriaLabel(body: string): string {
 /** Quick-capture shell. All user-facing strings are English until i18n (see /I18N.md). */
 export default function App() {
   const mainRef = useRef<HTMLElement>(null);
-  const [scheduleAccordionVersion, setScheduleAccordionVersion] = useState(0);
+  const [layoutAccordionVersion, setLayoutAccordionVersion] = useState(0);
 
   const labelId = useId();
   const quickPicksLegendId = useId();
@@ -554,9 +554,13 @@ export default function App() {
 
   useEffect(() => {
     if (mainTab !== "schedule") return;
-    void refreshDailyReminders();
     void refreshSleepHours();
-  }, [mainTab, refreshDailyReminders, refreshSleepHours]);
+  }, [mainTab, refreshSleepHours]);
+
+  useEffect(() => {
+    if (mainTab !== "routines") return;
+    void refreshDailyReminders();
+  }, [mainTab, refreshDailyReminders]);
 
   useEffect(() => {
     if (mainTab !== "history") return;
@@ -869,7 +873,7 @@ export default function App() {
       burstCount: row.burstCount,
       burstIntervalMin: row.burstIntervalMin,
     });
-    setScheduleAccordionVersion((v) => v + 1);
+    setLayoutAccordionVersion((v) => v + 1);
   }
 
   async function onSaveDailyReminder() {
@@ -901,7 +905,7 @@ export default function App() {
       setDailyReminderEnabled(settings.enabled);
       setDailyReminders(settings.reminders);
       setDailyDraft(null);
-      setScheduleAccordionVersion((v) => v + 1);
+      setLayoutAccordionVersion((v) => v + 1);
     } catch (err) {
       setDailyError(String(err));
     } finally {
@@ -1078,7 +1082,7 @@ export default function App() {
   }
 
   const tabBtnClass = (active: boolean) =>
-    `flex-1 rounded-lg px-3 py-2 text-sm font-medium transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand ${
+    `flex-1 rounded-lg px-2 py-2 text-xs font-medium transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand sm:px-3 sm:text-sm ${
       active
         ? "bg-brand/18 text-ink shadow-sm"
         : "text-ink/60 hover:bg-brand/10 hover:text-ink/85"
@@ -1115,7 +1119,7 @@ export default function App() {
 
   useFitWindowHeight(mainRef, [
     mainTab,
-    scheduleAccordionVersion,
+    layoutAccordionVersion,
     gapFillPrompt != null,
     showCurrentActivity,
     showManage,
@@ -1123,6 +1127,8 @@ export default function App() {
     recentCaptures.length,
     digest.length,
     quickPicks.length,
+    dailyDraft != null,
+    dailyReminders.length,
   ]);
 
   return (
@@ -1161,6 +1167,15 @@ export default function App() {
           className={tabBtnClass(mainTab === "schedule")}
         >
           Schedule
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mainTab === "routines"}
+          onClick={() => setMainTab("routines")}
+          className={tabBtnClass(mainTab === "routines")}
+        >
+          Routines
         </button>
       </nav>
 
@@ -1396,7 +1411,7 @@ export default function App() {
 
           <details
             className="rounded-lg border border-brand/20 bg-white/80 px-3 py-2 shadow-sm open:pb-3"
-            onToggle={() => setScheduleAccordionVersion((v) => v + 1)}
+            onToggle={() => setLayoutAccordionVersion((v) => v + 1)}
           >
             <summary className="flex cursor-pointer list-none select-none items-center gap-2 text-sm font-medium text-ink [&::-webkit-details-marker]:hidden">
               <span className="flex-1">Random ping</span>
@@ -1482,7 +1497,7 @@ export default function App() {
 
           <details
             className="rounded-lg border border-brand/20 bg-white/80 px-3 py-2 shadow-sm open:pb-3"
-            onToggle={() => setScheduleAccordionVersion((v) => v + 1)}
+            onToggle={() => setLayoutAccordionVersion((v) => v + 1)}
           >
             <summary className="flex cursor-pointer list-none select-none items-center gap-2 text-sm font-medium text-ink [&::-webkit-details-marker]:hidden">
               <span className="flex-1">Overdue ping</span>
@@ -1572,7 +1587,7 @@ export default function App() {
 
           <details
             className="rounded-lg border border-brand/20 bg-white/80 px-3 py-2 shadow-sm open:pb-3"
-            onToggle={() => setScheduleAccordionVersion((v) => v + 1)}
+            onToggle={() => setLayoutAccordionVersion((v) => v + 1)}
           >
             <summary className="flex cursor-pointer list-none select-none items-center gap-2 text-sm font-medium text-ink [&::-webkit-details-marker]:hidden">
               <span className="flex-1">Sleeping hours</span>
@@ -1646,24 +1661,31 @@ export default function App() {
             </div>
           </details>
 
-          <details
-            className="rounded-lg border border-brand/20 bg-white/80 px-3 py-2 shadow-sm open:pb-3"
-            onToggle={() => setScheduleAccordionVersion((v) => v + 1)}
-          >
-            <summary className="flex cursor-pointer list-none select-none items-center gap-2 text-sm font-medium text-ink [&::-webkit-details-marker]:hidden">
-              <span className="flex-1">Daily reminder ping</span>
+        </section>
+      ) : null}
+
+      {mainTab === "routines" ? (
+        <section className="flex flex-col gap-4" aria-label="Daily routines">
+          <header className="space-y-1">
+            <h1 className="text-lg font-semibold tracking-tight text-ink">
+              Daily routines
+            </h1>
+            <p className="text-xs leading-snug text-ink/50">
+              Gentle self-care nudges (water, food, meds, breaks). Separate from
+              activity pings on{" "}
               <button
                 type="button"
-                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-brand/25 text-[0.65rem] font-semibold text-ink/60"
-                aria-label="Daily reminder help"
-                title="Gentle self-care nudges (water, food, meds, breaks). Separate from activity pings. Off by default."
-                onClick={(e) => e.preventDefault()}
-                onKeyDown={(e) => e.stopPropagation()}
+                className="font-medium text-brand underline decoration-brand/35 underline-offset-2 hover:decoration-brand"
+                onClick={() => setMainTab("schedule")}
               >
-                ?
+                Schedule
               </button>
-            </summary>
-            <div className="mt-3 flex flex-col gap-3">
+              . Off by default.
+            </p>
+          </header>
+
+          <div className="flex flex-col gap-3 rounded-lg border border-brand/20 bg-white/80 px-3 py-3 shadow-sm">
+
               <label className="flex cursor-pointer items-center gap-2 text-sm text-ink/85">
                 <input
                   type="checkbox"
@@ -1942,7 +1964,7 @@ export default function App() {
                   disabled={!dailyReminderEnabled}
                   onClick={() => {
                     setDailyDraft(emptyDailyDraft());
-                    setScheduleAccordionVersion((v) => v + 1);
+                    setLayoutAccordionVersion((v) => v + 1);
                   }}
                   className="self-start cursor-pointer rounded-md border border-dashed border-brand/35 px-3 py-1.5 text-sm text-ink/80 hover:bg-brand/5 disabled:cursor-not-allowed disabled:opacity-50"
                 >
@@ -1954,8 +1976,8 @@ export default function App() {
                   {dailyError}
                 </p>
               ) : null}
-            </div>
-          </details>
+            
+          </div>
         </section>
       ) : null}
 

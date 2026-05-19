@@ -1,7 +1,7 @@
 import { type RefObject, useEffect, useRef } from "react";
 
 /** Fixed inner width for the non-resizable capture window (`tauri.conf.json`). */
-const WINDOW_INNER_WIDTH = 420;
+const WINDOW_INNER_WIDTH = 460;
 const MIN_INNER_HEIGHT = 320;
 /** Avoid a persistent 1px scrollbar from rounding / shadows. */
 const HEIGHT_SLOP_PX = 12;
