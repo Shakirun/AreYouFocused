@@ -70,7 +70,7 @@ dependencies = [
 
 [[package]]
 name = "are_you_focused"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "quick-xml 0.37.5",

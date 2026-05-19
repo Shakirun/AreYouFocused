@@ -1,6 +1,6 @@
 [package]
 name = "are_you_focused"
-version = "0.2.0"
+version = "0.3.0"
 description = "AreYouFocused"
 authors = ["You"]
 edition = "2021"

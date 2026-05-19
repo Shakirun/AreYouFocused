@@ -17,6 +17,11 @@
 }
 
 @layer base {
+  :root {
+    /* Keep in sync with MAX_WINDOW_INNER_HEIGHT in useFitWindowHeight.ts */
+    --app-max-inner-height: 770px;
+  }
+
   details:not([open]) {
     overflow: hidden;
   }
@@ -29,6 +34,11 @@
     overflow-x: hidden;
     /* Window height is driven by Tauri fit-to-content; avoid page scrollbars. */
     overflow-y: hidden;
+  }
+
+  /* Tall tab panels scroll inside the capped shell (see App.tsx .app-tab-scroll). */
+  .app-tab-scroll {
+    scrollbar-gutter: stable;
   }
 
   @media (prefers-reduced-motion: reduce) {
