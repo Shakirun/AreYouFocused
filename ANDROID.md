@@ -28,6 +28,48 @@ Default SDK location:
 
 (PowerShell: `$env:LOCALAPPDATA\Android\Sdk`)
 
+#### Manual SDK setup (skipped Tauri / cmdline-tools install)
+
+If `tauri android init` reports **SDK not found** or you answered **no** when asked to install command-line tools, install the SDK through Android Studio instead:
+
+1. **Open Android Studio** and finish the first-run setup wizard (this creates the SDK folder and downloads base packages).
+2. **File → Settings** (or **Android Studio → Settings** on macOS).
+3. **Languages & Frameworks → Android SDK**.
+4. Copy **Android SDK Location** (typical Windows path: `C:\Users\<you>\AppData\Local\Android\Sdk`).
+5. **SDK Platforms** tab: check **Android 14.0 (API 34)** or newer → **Apply**.
+6. **SDK Tools** tab: check at least:
+   - Android SDK Build-Tools
+   - Android SDK Platform-Tools
+   - NDK (Side by side)
+   - Android SDK Command-line Tools (latest)
+7. **Apply → OK** and wait for downloads to finish.
+8. Set the user environment variable (replace the path if yours differs):
+
+   ```powershell
+   [Environment]::SetEnvironmentVariable('ANDROID_HOME', 'C:\Users\Oleg\AppData\Local\Android\Sdk', 'User')
+   ```
+
+   Or run the setup script (detects JBR + SDK path):
+
+   ```powershell
+   .\scripts\setup-android-env.ps1 -SetUserEnv
+   ```
+
+9. **Close and reopen** PowerShell, then verify:
+
+   ```powershell
+   $env:ANDROID_HOME
+   Test-Path "$env:ANDROID_HOME\platform-tools\adb.exe"
+   ```
+
+10. Re-run init: `npm run tauri:android:init`
+
+**Empty SDK folder:** If `%LOCALAPPDATA%\Android\Sdk` exists but has no `platform-tools`, `build-tools`, or `platforms` subfolders, Android Studio has not installed components yet — complete steps 1–7 above before running Tauri.
+
+#### Alternative: let Tauri install cmdline-tools
+
+When `npm run tauri:android:init` prompts to install Android command-line tools, answering **yes** can download **cmdline-tools** into your SDK automatically. You still need **Platform**, **Build-Tools**, **NDK**, and **Platform-Tools** from SDK Manager (or `sdkmanager` after cmdline-tools exist). Studio-first setup is usually easier on a fresh Windows machine.
+
 ### 3. Set JAVA_HOME (required for `tauri android init`)
 
 Tauri/Gradle need a JDK. Android Studio ships **JetBrains Runtime (JBR)** — use that instead of installing a separate JDK.
@@ -118,6 +160,14 @@ failed to ensure Android environment: Java not found in PATH, default Android St
 ```
 
 → Android Studio is missing, JBR is in a non-default path, or `JAVA_HOME` is unset. Run `.\scripts\setup-android-env.ps1` and set `JAVA_HOME` to the reported JBR path.
+
+If **Java is OK** but the SDK is not found (`ANDROID_HOME` unset, or SDK path empty):
+
+→ Run `.\scripts\setup-android-env.ps1` — it checks `%LOCALAPPDATA%\Android\Sdk`, `%USERPROFILE%\AppData\Local\Android\Sdk`, `C:\Android\Sdk`, Android Studio `android.sdk.path.xml`, and reports which folders exist vs are populated.
+
+→ If the script shows **folder exists but empty / incomplete**, follow [Manual SDK setup](#manual-sdk-setup-skipped-tauri--cmdline-tools-install) above (open Android Studio, SDK Manager, install components).
+
+→ After components are installed, use `-SetUserEnv` and open a **new** terminal before `npm run tauri:android:init`.
 
 ### 6. Rust Android targets
 
