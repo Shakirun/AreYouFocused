@@ -270,7 +270,7 @@ For Windows 10 or newer: You should use developer mode.
 5. Open a **new** PowerShell in the project folder and rebuild:
 
    ```powershell
-   npm run tauri:android:build -- --apk
+   npm run tauri:android:build:apk
    ```
 
 Shortcut: **Win + R** → `ms-settings:developers`
@@ -284,7 +284,7 @@ Shortcut: **Win + R** → `ms-settings:developers`
 5. Откройте **новый** PowerShell в папке проекта и пересоберите:
 
    ```powershell
-   npm run tauri:android:build -- --apk
+   npm run tauri:android:build:apk
    ```
 
 #### Alternative: elevated terminal (admin)
@@ -322,7 +322,7 @@ npm run build
 npm run tauri:android:build:apk
 ```
 
-Equivalent: `npm run tauri:android:build -- --apk`.
+Use `npm run tauri:android:build:apk` for release APKs.
 
 For Google Play (AAB only): `npm run tauri:android:build` (no `--apk`).
 
@@ -352,7 +352,7 @@ npm run build
 npm run tauri:android:build:debug
 ```
 
-This runs `tauri android build -- --apk --debug`. Gradle signs with the standard **debug keystore** (`%USERPROFILE%\.android\debug.keystore`, passwords `android` / alias `androiddebugkey`), created on first Android Studio or debug build.
+This runs `tauri android build --debug --apk`. Gradle signs with the standard **debug keystore** (`%USERPROFILE%\.android\debug.keystore`, passwords `android` / alias `androiddebugkey`), created on first Android Studio or debug build.
 
 **Output (typical):**
 
