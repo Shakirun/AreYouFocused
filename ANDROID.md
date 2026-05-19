@@ -4,6 +4,10 @@ AreYouFocused uses **Tauri 2** for Android. The repo includes `src-tauri/tauri.a
 
 ## Prerequisites (Windows)
 
+> **Build blocked with `os error 4551` / “Application Control policy”?**  
+> Windows 11 **Smart App Control** blocks Rust build scripts during `cargo build`. This is an environment issue, not an AreYouFocused bug.  
+> **Quick fix:** turn SAC **Off**, reboot, then `cargo clean` and rebuild. Full ranked steps (SAC, WSL2, Defender exclusions, Developer Mode): **[BUILD-WINDOWS.md](BUILD-WINDOWS.md)**.
+
 ### 1. Install Android Studio
 
 If Android Studio is not installed:
@@ -210,3 +214,12 @@ Artifacts are under `src-tauri/gen/android/app/build/outputs/`.
 - **Background pings:** Not guaranteed when the OS suspends the app (Doze). Treat phone builds as foreground-first for now.
 
 Windows desktop build is unchanged: `npm run tauri:build`.
+
+## Troubleshooting (Windows)
+
+| Symptom | Likely cause | Action |
+|---------|--------------|--------|
+| `Application Control policy has blocked this file (os error 4551)` on `build-script-build` | Smart App Control | [BUILD-WINDOWS.md](BUILD-WINDOWS.md) — disable SAC or use WSL2 |
+| Build still fails after disabling SAC | Stale blocked artifacts | `cd src-tauri; cargo clean; cd ..` then rebuild |
+| `Java not found` / SDK not found | `JAVA_HOME` / `ANDROID_HOME` | [Verify environment](#5-verify-environment), `.\scripts\setup-android-env.ps1` |
+| Slow Rust compiles, Defender warnings | Antivirus scanning `target\` | Defender exclusions in [BUILD-WINDOWS.md](BUILD-WINDOWS.md) (does **not** replace disabling SAC) |

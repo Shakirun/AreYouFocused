@@ -40,6 +40,7 @@ Desktop-first **random-ping** productivity tracker (WhatNow-style): honest, loca
   - **System tray:** Closing the capture window **minimizes to tray** (does not quit). **Left-click** tray icon or menu **Show capture window** / **Quit AreYouFocused**. Requires the `tray-icon` feature on `tauri` (enabled in this repo).
   - **Scheduler API:** `get_scheduler_status` exposes next ping time, interval bounds, and follow-up state (`awaitingFollowup`, `plannedCheckSubject`). `submit_capture` accepts `plannedDurationMinutes` (optional). `list_recent_captures`, `list_top_quick_picks`, `repeat_last_capture`, `snooze_ping`, `update_ping_interval` as documented in code.
   - **`npm run tauri:build`** — production frontend + Rust + **NSIS** installer (Windows x64). Output under **`src-tauri/target/release/bundle/nsis/`** as `AreYouFocused_*_x64-setup.exe` (version in filename).
+  - **Windows 11 build blocked (error 4551):** If `cargo build` fails with *Application Control policy* / `build-script-build`, see **[BUILD-WINDOWS.md](BUILD-WINDOWS.md)** (Smart App Control). Android: [ANDROID.md](ANDROID.md).
   - **Icons:** Source **`src-tauri/icons-source/app-icon.png`**. Regenerate with `npm run tauri -- icon src-tauri/icons-source/app-icon.png`. Release builds need [Microsoft Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/).
 
 Optional editor-specific tooling or personal notes can live outside tracked files (see `.gitignore`); they are **not** required to build or run the app.
