@@ -1,4 +1,4 @@
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 const INITIAL_SQL: &str = include_str!("../../migrations/001_initial.sql");
 
@@ -7,6 +7,47 @@ pub fn apply_initial(conn: &Connection) -> rusqlite::Result<()> {
     migrate_scheduler_followup(conn)?;
     migrate_captures_analytics(conn)?;
     migrate_captures_finished(conn)?;
+    migrate_overdue_ping_settings(conn)?;
+    Ok(())
+}
+
+fn setting_exists(conn: &Connection, key: &str) -> rusqlite::Result<bool> {
+    let exists: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM settings WHERE key = ?1",
+            rusqlite::params![key],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(exists.is_some())
+}
+
+/// Overdue / random ping toggles and overdue interval bounds.
+fn migrate_overdue_ping_settings(conn: &Connection) -> rusqlite::Result<()> {
+    if !setting_exists(conn, "random_ping_enabled")? {
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('random_ping_enabled', '1')",
+            [],
+        )?;
+    }
+    if !setting_exists(conn, "overdue_ping_enabled")? {
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('overdue_ping_enabled', '1')",
+            [],
+        )?;
+    }
+    if !setting_exists(conn, "overdue_ping_min_minutes")? {
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('overdue_ping_min_minutes', '15')",
+            [],
+        )?;
+    }
+    if !setting_exists(conn, "overdue_ping_max_minutes")? {
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('overdue_ping_max_minutes', '30')",
+            [],
+        )?;
+    }
     Ok(())
 }
 

@@ -7,6 +7,10 @@ type SchedulerStatus = {
   nextPingAtUnix: number | null;
   pingMinMinutes: number;
   pingMaxMinutes: number;
+  randomPingEnabled: boolean;
+  overduePingEnabled: boolean;
+  overduePingMinMinutes: number;
+  overduePingMaxMinutes: number;
   awaitingFollowup: boolean;
   plannedCheckSubject: string | null;
 };
@@ -31,6 +35,13 @@ type DigestPeriod = "day" | "week" | "month" | "all";
 type QuickPickRow = {
   body: string;
   count: number;
+};
+
+type CurrentActivityStatus = {
+  body: string | null;
+  startedAtUnix: number | null;
+  durationMinutes: number | null;
+  plannedEndAtUnix: number | null;
 };
 
 /** Emitted after −15 min shortens the last logged segment (`gap-fill-needed`). */
@@ -93,6 +104,69 @@ function formatSegmentMinutes(m: number): string {
   return r === 0 ? `${h} h` : `${h} h ${r} min`;
 }
 
+function formatHoursMinutesParts(totalMinutes: number): string {
+  if (totalMinutes < 60) {
+    return `${totalMinutes} minute${totalMinutes === 1 ? "" : "s"}`;
+  }
+  const hours = Math.floor(totalMinutes / 60);
+  const mins = totalMinutes % 60;
+  if (mins === 0) {
+    return `${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+  return `${hours} hour${hours === 1 ? "" : "s"} ${mins} minute${mins === 1 ? "" : "s"}`;
+}
+
+/** Green countdown or warm overdue line for timed "Currently on" tasks. */
+function formatPlannedCountdown(
+  plannedEndUnix: number,
+  nowUnix: number,
+): { text: string; overdue: boolean } {
+  const diffSec = plannedEndUnix - nowUnix;
+  const totalMinutes = Math.max(0, Math.ceil(Math.abs(diffSec) / 60));
+  if (diffSec > 0) {
+    return {
+      text: `${formatHoursMinutesParts(totalMinutes)} left`,
+      overdue: false,
+    };
+  }
+  if (totalMinutes === 0) {
+    return { text: "just overdue", overdue: true };
+  }
+  return {
+    text: `${formatHoursMinutesParts(totalMinutes)} overdue`,
+    overdue: true,
+  };
+}
+
+function parseAdjustMinutes(input: string): number | null {
+  const t = input.trim();
+  if (t === "") return null;
+  const n = Number.parseInt(t, 10);
+  if (!Number.isFinite(n) || n < 1 || n > PING_MAX_MINUTES_CAP) return null;
+  return n;
+}
+
+function formatElapsedSubtitle(
+  startedAtUnix: number,
+  nowUnix: number,
+  plannedMinutes: number | null | undefined,
+): string {
+  const elapsedSec = Math.max(0, nowUnix - startedAtUnix);
+  const totalMinutes = Math.floor(elapsedSec / 60);
+  let base: string;
+  if (totalMinutes < 60) {
+    base = `for ${totalMinutes} minute${totalMinutes === 1 ? "" : "s"}`;
+  } else {
+    const hours = Math.floor(totalMinutes / 60);
+    const mins = totalMinutes % 60;
+    base = `for ${hours} hour${hours === 1 ? "" : "s"} ${mins} minute${mins === 1 ? "" : "s"}`;
+  }
+  if (plannedMinutes != null && plannedMinutes > 0) {
+    return `${base} (${formatSegmentMinutes(plannedMinutes)} planned)`;
+  }
+  return base;
+}
+
 function formatNextPing(unix: number | null): string {
   if (unix == null) {
     return "Next ping: not scheduled yet.";
@@ -118,17 +192,10 @@ function formatGapWindow(adjustedEndUnix: number, gapMinutes: number): string {
   return `From ${from} until now (${to}).`;
 }
 
-/** Matches `still_button_label` in `src-tauri/src/platform/windows.rs` (toast actions). */
-function formatStillButtonLabel(body: string): string {
-  const PREFIX = "Still: ";
-  const MAX_CHARS = 42;
+/** Full Still label for screen readers (toast keeps `still_button_label` in Rust). */
+function stillAriaLabel(body: string): string {
   const t = body.trim();
-  if (!t) return "Still";
-  const chars = Array.from(t);
-  const prefixLen = Array.from(PREFIX).length;
-  const avail = Math.max(0, MAX_CHARS - prefixLen);
-  if (chars.length <= avail) return PREFIX + t;
-  return PREFIX + chars.slice(0, Math.max(0, avail - 1)).join("") + "…";
+  return t ? `Still on: ${t}` : "Still — repeat last capture";
 }
 
 /** Quick-capture shell. All user-facing strings are English until i18n (see /I18N.md). */
@@ -141,6 +208,10 @@ export default function App() {
   const plannedPresetsLegendId = useId();
   const minId = useId();
   const maxId = useId();
+  const overdueMinId = useId();
+  const overdueMaxId = useId();
+  const adjustMinutesId = useId();
+  const manageExtendId = useId();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [text, setText] = useState("");
   const [plannedMinutes, setPlannedMinutes] = useState(
@@ -157,8 +228,19 @@ export default function App() {
   const [intervalLine, setIntervalLine] = useState<string | null>(null);
   const [boundsMin, setBoundsMin] = useState(30);
   const [boundsMax, setBoundsMax] = useState(120);
+  const [randomPingEnabled, setRandomPingEnabled] = useState(true);
+  const [overdueBoundsMin, setOverdueBoundsMin] = useState(15);
+  const [overdueBoundsMax, setOverdueBoundsMax] = useState(30);
+  const [overduePingEnabled, setOverduePingEnabled] = useState(true);
+  const [adjustMinutes, setAdjustMinutes] = useState("15");
+  const [manageExtendMinutes, setManageExtendMinutes] = useState("30");
+  const [extendingManage, setExtendingManage] = useState(false);
   const [intervalError, setIntervalError] = useState<string | null>(null);
+  const [overdueIntervalError, setOverdueIntervalError] = useState<string | null>(
+    null,
+  );
   const [applyingInterval, setApplyingInterval] = useState(false);
+  const [applyingOverdueInterval, setApplyingOverdueInterval] = useState(false);
   const [snoozing, setSnoozing] = useState(false);
   const [repeating, setRepeating] = useState(false);
   const [recentCaptures, setRecentCaptures] = useState<CaptureRow[]>([]);
@@ -179,6 +261,11 @@ export default function App() {
   );
   const [gapSaving, setGapSaving] = useState(false);
   const gapActivityRef = useRef<HTMLTextAreaElement>(null);
+  const [currentActivity, setCurrentActivity] =
+    useState<CurrentActivityStatus | null>(null);
+  const [nowUnix, setNowUnix] = useState(() =>
+    Math.floor(Date.now() / 1000),
+  );
 
   const latestCaptureBody = recentCaptures[0]?.body?.trim() ?? "";
   const canRepeatLast = latestCaptureBody.length > 0;
@@ -206,10 +293,22 @@ export default function App() {
     }
   }, []);
 
+  const refreshCurrentActivity = useCallback(async () => {
+    try {
+      const status = await invoke<CurrentActivityStatus>("get_current_activity");
+      setCurrentActivity(status);
+    } catch {
+      setCurrentActivity(null);
+    }
+  }, []);
+
   const refreshCaptureLists = useCallback(async () => {
-    await refreshRecentCaptures();
-    await refreshQuickPicks();
-  }, [refreshRecentCaptures, refreshQuickPicks]);
+    await Promise.all([
+      refreshRecentCaptures(),
+      refreshQuickPicks(),
+      refreshCurrentActivity(),
+    ]);
+  }, [refreshRecentCaptures, refreshQuickPicks, refreshCurrentActivity]);
 
   const refreshDigest = useCallback(async () => {
     try {
@@ -228,10 +327,16 @@ export default function App() {
       const s = await invoke<SchedulerStatus>("get_scheduler_status");
       setSchedulerLine(formatNextPing(s.nextPingAtUnix));
       setIntervalLine(
-        `Random interval: ${s.pingMinMinutes}–${s.pingMaxMinutes} min`,
+        s.randomPingEnabled
+          ? `Random interval: ${s.pingMinMinutes}–${s.pingMaxMinutes} min`
+          : "Random ping: disabled",
       );
       setBoundsMin(s.pingMinMinutes);
       setBoundsMax(s.pingMaxMinutes);
+      setRandomPingEnabled(s.randomPingEnabled);
+      setOverdueBoundsMin(s.overduePingMinMinutes);
+      setOverdueBoundsMax(s.overduePingMaxMinutes);
+      setOverduePingEnabled(s.overduePingEnabled);
       setAwaitingFollowup(Boolean(s.awaitingFollowup));
       setPlannedCheckSubject(s.plannedCheckSubject ?? null);
     } catch {
@@ -257,6 +362,28 @@ export default function App() {
     if (mainTab !== "history") return;
     void refreshDigest();
   }, [digestPeriod, mainTab, refreshDigest]);
+
+  useEffect(() => {
+    if (mainTab !== "capture") return;
+    const needsTick =
+      currentActivity?.startedAtUnix != null ||
+      currentActivity?.plannedEndAtUnix != null;
+    if (!needsTick) return;
+    const id = window.setInterval(() => {
+      setNowUnix(Math.floor(Date.now() / 1000));
+    }, 30_000);
+    return () => window.clearInterval(id);
+  }, [
+    mainTab,
+    currentActivity?.startedAtUnix,
+    currentActivity?.plannedEndAtUnix,
+  ]);
+
+  useEffect(() => {
+    if (mainTab === "capture") {
+      setNowUnix(Math.floor(Date.now() / 1000));
+    }
+  }, [mainTab, currentActivity?.body, currentActivity?.startedAtUnix]);
 
   const wasAwaitingFollowupRef = useRef(false);
   useEffect(() => {
@@ -339,11 +466,20 @@ export default function App() {
     }
   }
 
-  async function onMinus15() {
+  async function onAdjustMinus() {
     setError(null);
+    const minutes = parseAdjustMinutes(adjustMinutes);
+    if (minutes == null) {
+      setError(
+        `Enter minutes between 1 and ${PING_MAX_MINUTES_CAP.toLocaleString()} to shorten.`,
+      );
+      return;
+    }
     setAdjustingMinus(true);
     try {
-      const prompt = await invoke<ShortenGapPrompt>("shorten_last_capture_15");
+      const prompt = await invoke<ShortenGapPrompt>("shorten_last_capture", {
+        minutes,
+      });
       openGapFillDialog(prompt);
       void refreshSchedulerStatus();
       void refreshCaptureLists();
@@ -354,17 +490,45 @@ export default function App() {
     }
   }
 
-  async function onPlus15() {
+  async function onAdjustPlus() {
     setError(null);
+    const minutes = parseAdjustMinutes(adjustMinutes);
+    if (minutes == null) {
+      setError(
+        `Enter minutes between 1 and ${PING_MAX_MINUTES_CAP.toLocaleString()} to extend.`,
+      );
+      return;
+    }
     setAdjustingPlus(true);
     try {
-      await invoke<SchedulerStatus>("extend_last_capture_15");
+      await invoke<SchedulerStatus>("extend_last_capture", { minutes });
       void refreshSchedulerStatus();
       void refreshCaptureLists();
     } catch (err) {
       setError(String(err));
     } finally {
       setAdjustingPlus(false);
+    }
+  }
+
+  async function onManageContinue() {
+    setError(null);
+    const minutes = parseAdjustMinutes(manageExtendMinutes);
+    if (minutes == null) {
+      setError(
+        `Enter minutes between 1 and ${PING_MAX_MINUTES_CAP.toLocaleString()} to continue.`,
+      );
+      return;
+    }
+    setExtendingManage(true);
+    try {
+      await invoke<SchedulerStatus>("extend_last_capture", { minutes });
+      void refreshSchedulerStatus();
+      void refreshCaptureLists();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setExtendingManage(false);
     }
   }
 
@@ -460,12 +624,46 @@ export default function App() {
       await invoke<SchedulerStatus>("update_ping_interval", {
         pingMinMinutes: boundsMin,
         pingMaxMinutes: boundsMax,
+        randomPingEnabled,
       });
       void refreshSchedulerStatus();
     } catch (err) {
       setIntervalError(String(err));
     } finally {
       setApplyingInterval(false);
+    }
+  }
+
+  async function onApplyOverdueInterval() {
+    setOverdueIntervalError(null);
+    if (overdueBoundsMin < 1) {
+      setOverdueIntervalError("Minimum must be at least 1 minute.");
+      return;
+    }
+    if (overdueBoundsMax < overdueBoundsMin) {
+      setOverdueIntervalError(
+        "Maximum must be greater than or equal to minimum.",
+      );
+      return;
+    }
+    if (overdueBoundsMax > PING_MAX_MINUTES_CAP) {
+      setOverdueIntervalError(
+        `Maximum must be at most ${PING_MAX_MINUTES_CAP} minutes (one week).`,
+      );
+      return;
+    }
+    setApplyingOverdueInterval(true);
+    try {
+      await invoke<SchedulerStatus>("update_overdue_ping_interval", {
+        overduePingMinMinutes: overdueBoundsMin,
+        overduePingMaxMinutes: overdueBoundsMax,
+        overduePingEnabled,
+      });
+      void refreshSchedulerStatus();
+    } catch (err) {
+      setOverdueIntervalError(String(err));
+    } finally {
+      setApplyingOverdueInterval(false);
     }
   }
 
@@ -536,8 +734,37 @@ export default function App() {
         : "text-ink/60 hover:bg-brand/10 hover:text-ink/85"
     }`;
 
+  const actionBusy =
+    saving ||
+    repeating ||
+    adjustingMinus ||
+    adjustingPlus ||
+    markingDone ||
+    extendingManage;
+
+  const activeBody = currentActivity?.body?.trim() ?? "";
+  const showCurrentActivity = activeBody.length > 0;
+  const plannedEndUnix = currentActivity?.plannedEndAtUnix ?? null;
+  const countdown =
+    plannedEndUnix != null
+      ? formatPlannedCountdown(plannedEndUnix, nowUnix)
+      : null;
+  const isOverdue = countdown?.overdue ?? false;
+  const elapsedSubtitle =
+    showCurrentActivity && currentActivity?.startedAtUnix != null
+      ? formatElapsedSubtitle(
+          currentActivity.startedAtUnix,
+          nowUnix,
+          currentActivity.durationMinutes,
+        )
+      : null;
+  const showManage =
+    showCurrentActivity &&
+    currentActivity?.durationMinutes != null &&
+    currentActivity.durationMinutes > 0;
+
   return (
-    <main className="mx-auto flex max-w-md flex-col gap-4 px-5 py-6">
+    <main className="mx-auto flex max-w-md flex-col gap-3 px-4 py-5">
       <nav
         className="flex gap-1 rounded-xl border border-brand/20 bg-white/70 p-1 shadow-sm"
         role="tablist"
@@ -573,22 +800,190 @@ export default function App() {
       </nav>
 
       {mainTab === "capture" ? (
-        <header className="space-y-0.5">
-          <h1 className="text-lg font-semibold tracking-tight text-ink">
-            What are you doing?
-          </h1>
-          <p className="text-sm text-ink/70">
-            Quick capture — honest answer. Timing controls live on{" "}
-            <button
-              type="button"
-              className="font-medium text-brand underline decoration-brand/35 underline-offset-2 hover:decoration-brand"
-              onClick={() => setMainTab("schedule")}
+        <section
+          className={`capture-status-card flex flex-col gap-0 p-3.5 ${
+            isOverdue ? "border-action/35 bg-action/[0.04]" : ""
+          }`}
+        >
+          <div className="flex items-start justify-between gap-3">
+          <header className="min-w-0 flex-1 space-y-0.5">
+            <p className="text-[0.65rem] font-medium uppercase tracking-wide text-ink/50">
+              Currently on:
+            </p>
+            <h1 className="break-words text-lg font-semibold leading-snug tracking-tight text-ink">
+              {showCurrentActivity ? activeBody : "Nothing"}
+            </h1>
+            {countdown ? (
+              <p
+                className={`text-sm font-medium tabular-nums ${
+                  countdown.overdue ? "text-action" : "text-emerald-700"
+                }`}
+                aria-live="polite"
+              >
+                {countdown.text}
+              </p>
+            ) : null}
+            {elapsedSubtitle ? (
+              <p className="text-xs text-ink/65" aria-live="polite">
+                {elapsedSubtitle}
+              </p>
+            ) : null}
+          </header>
+          <details className="group relative shrink-0">
+            <summary
+              className="flex h-7 w-7 cursor-pointer list-none items-center justify-center rounded-full border border-brand/25 bg-white/90 text-xs font-semibold text-ink/75 shadow-sm transition-colors hover:bg-brand/10 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand [&::-webkit-details-marker]:hidden"
+              aria-label="Help"
             >
-              Schedule
-            </button>
-            .
-          </p>
-        </header>
+              ?
+            </summary>
+            <div
+              role="tooltip"
+              className="absolute right-0 top-full z-10 mt-2 w-[min(18rem,calc(100vw-2.5rem))] rounded-lg border border-brand/25 bg-white px-3 py-2.5 text-sm leading-snug text-ink/80 shadow-lg"
+            >
+              <p>
+                What are you doing? Quick capture — honest answer. Ping
+                timing lives on{" "}
+                <button
+                  type="button"
+                  className="font-medium text-brand underline decoration-brand/35 underline-offset-2 hover:decoration-brand"
+                  onClick={() => setMainTab("schedule")}
+                >
+                  Schedule
+                </button>
+                .
+              </p>
+            </div>
+          </details>
+          </div>
+
+          <div
+            className="mt-3 border-t border-brand/12 pt-3"
+            role="toolbar"
+            aria-label="Timing and repeat actions"
+          >
+            <div className="mb-2 flex items-end gap-1.5">
+              <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <label
+                  htmlFor={adjustMinutesId}
+                  className="text-[0.65rem] font-medium text-ink/55"
+                >
+                  Adjust by (min)
+                </label>
+                <input
+                  id={adjustMinutesId}
+                  type="number"
+                  min={1}
+                  max={PING_MAX_MINUTES_CAP}
+                  inputMode="numeric"
+                  value={adjustMinutes}
+                  onChange={(e) => setAdjustMinutes(e.target.value)}
+                  disabled={actionBusy}
+                  className="w-full rounded-md border border-brand/25 px-2 py-1.5 text-sm tabular-nums text-ink outline-none ring-brand/15 focus:border-brand focus:ring-2 disabled:opacity-60"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => void onAdjustMinus()}
+                disabled={actionBusy || !canAdjustDuration}
+                title="End your last logged segment earlier, then log what happened since."
+                className="capture-primary-btn shrink-0 tabular-nums"
+              >
+                {adjustingMinus ? "…" : "−"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void onAdjustPlus()}
+                disabled={actionBusy || !canRepeatLast}
+                title="Add minutes to your last segment and postpone the next ping."
+                className="capture-primary-btn shrink-0 tabular-nums"
+              >
+                {adjustingPlus ? "…" : "+"}
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                onClick={() => void onDone()}
+                disabled={actionBusy}
+                title="Mark your current timed task as finished and log what you do next."
+                className="capture-primary-btn"
+              >
+                {markingDone ? "…" : "Done"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void onRepeatLast()}
+                disabled={actionBusy || !canRepeatLast}
+                title={
+                  canRepeatLast
+                    ? `Still on “${latestCaptureBody}” — log the same answer again.`
+                    : "Save an answer once to enable Still."
+                }
+                aria-label={
+                  canRepeatLast
+                    ? stillAriaLabel(latestCaptureBody)
+                    : "Still — save a capture first"
+                }
+                className="capture-primary-btn"
+              >
+                {repeating ? "…" : "Still"}
+              </button>
+            </div>
+          </div>
+
+          {showManage ? (
+            <details
+              className={`mt-3 border-t border-brand/12 pt-2 ${
+                isOverdue ? "open:border-action/25" : ""
+              }`}
+              open={isOverdue || undefined}
+            >
+              <summary
+                className={`cursor-pointer select-none text-sm font-medium ${
+                  isOverdue ? "text-action" : "text-ink"
+                }`}
+              >
+                Manage
+              </summary>
+              <div className="mt-2 space-y-2 rounded-lg border border-brand/15 bg-white/70 p-2.5">
+                <p className="text-xs leading-snug text-ink/70">
+                  {isOverdue
+                    ? "Still on this? Extend your plan and push the next check."
+                    : "Adjust how long you plan to keep at this."}
+                </p>
+                <div className="flex flex-wrap items-end gap-2">
+                  <div className="min-w-[5.5rem] flex-1">
+                    <label
+                      htmlFor={manageExtendId}
+                      className="text-[0.65rem] font-medium text-ink/55"
+                    >
+                      Continue (min)
+                    </label>
+                    <input
+                      id={manageExtendId}
+                      type="number"
+                      min={1}
+                      max={PING_MAX_MINUTES_CAP}
+                      inputMode="numeric"
+                      value={manageExtendMinutes}
+                      onChange={(e) => setManageExtendMinutes(e.target.value)}
+                      disabled={actionBusy}
+                      className="mt-0.5 w-full rounded-md border border-brand/25 px-2 py-1.5 text-sm tabular-nums text-ink outline-none ring-brand/15 focus:border-brand focus:ring-2 disabled:opacity-60"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void onManageContinue()}
+                    disabled={actionBusy}
+                    className="capture-secondary-btn shrink-0"
+                  >
+                    {extendingManage ? "…" : "Extend plan"}
+                  </button>
+                </div>
+              </div>
+            </details>
+          ) : null}
+        </section>
       ) : null}
 
       {mainTab === "schedule" ? (
@@ -635,10 +1030,36 @@ export default function App() {
           </header>
 
           <details className="rounded-lg border border-brand/20 bg-white/80 px-3 py-2 shadow-sm open:pb-3">
-            <summary className="cursor-pointer select-none text-sm font-medium text-ink">
-              Random ping interval
+            <summary className="flex cursor-pointer list-none select-none items-center gap-2 text-sm font-medium text-ink [&::-webkit-details-marker]:hidden">
+              <span className="flex-1">Random ping</span>
+              <span
+                className="group/help relative flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-brand/25 text-[0.65rem] font-semibold text-ink/60"
+                role="img"
+                aria-label="Random ping help"
+                onClick={(e) => e.preventDefault()}
+                onKeyDown={(e) => e.stopPropagation()}
+              >
+                ?
+                <span
+                  role="tooltip"
+                  className="pointer-events-none absolute right-0 top-full z-10 mt-1.5 hidden w-56 rounded-md border border-brand/25 bg-white px-2.5 py-2 text-xs font-normal leading-snug text-ink/80 shadow-lg group-hover/help:block group-focus-within/help:block"
+                >
+                  How often to ping when you chose &ldquo;No idea&rdquo; — no planned
+                  duration on the capture.
+                </span>
+              </span>
             </summary>
             <div className="mt-3 flex flex-col gap-3">
+              <label className="flex cursor-pointer items-center gap-2 text-sm text-ink/85">
+                <input
+                  type="checkbox"
+                  checked={randomPingEnabled}
+                  onChange={(e) => setRandomPingEnabled(e.target.checked)}
+                  disabled={applyingInterval}
+                  className="h-4 w-4 rounded border-brand/30 text-brand focus:ring-brand"
+                />
+                Enabled
+              </label>
               <div className="grid grid-cols-2 gap-3">
                 <div className="flex flex-col gap-1">
                   <label
@@ -656,7 +1077,7 @@ export default function App() {
                     onChange={(e) =>
                       setBoundsMin(Number.parseInt(e.target.value, 10) || 0)
                     }
-                    disabled={applyingInterval}
+                    disabled={applyingInterval || !randomPingEnabled}
                     className="rounded-md border border-brand/25 px-2 py-1.5 text-sm text-ink outline-none ring-brand/15 focus:border-brand focus:ring-2 disabled:opacity-60"
                   />
                 </div>
@@ -676,7 +1097,7 @@ export default function App() {
                     onChange={(e) =>
                       setBoundsMax(Number.parseInt(e.target.value, 10) || 0)
                     }
-                    disabled={applyingInterval}
+                    disabled={applyingInterval || !randomPingEnabled}
                     className="rounded-md border border-brand/25 px-2 py-1.5 text-sm text-ink outline-none ring-brand/15 focus:border-brand focus:ring-2 disabled:opacity-60"
                   />
                 </div>
@@ -687,11 +1108,104 @@ export default function App() {
                 disabled={applyingInterval}
                 className="self-start rounded-md border border-brand/30 bg-brand/10 px-3 py-1.5 text-sm font-medium text-ink transition-colors hover:bg-brand/15 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {applyingInterval ? "Applying…" : "Apply interval"}
+                {applyingInterval ? "Applying…" : "Apply random ping"}
               </button>
               {intervalError ? (
                 <p className="text-sm font-medium text-red-600" role="status">
                   {intervalError}
+                </p>
+              ) : null}
+            </div>
+          </details>
+
+          <details className="rounded-lg border border-brand/20 bg-white/80 px-3 py-2 shadow-sm open:pb-3">
+            <summary className="flex cursor-pointer list-none select-none items-center gap-2 text-sm font-medium text-ink [&::-webkit-details-marker]:hidden">
+              <span className="flex-1">Overdue ping</span>
+              <span
+                className="group/help relative flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-brand/25 text-[0.65rem] font-semibold text-ink/60"
+                role="img"
+                aria-label="Overdue ping help"
+                onClick={(e) => e.preventDefault()}
+                onKeyDown={(e) => e.stopPropagation()}
+              >
+                ?
+                <span
+                  role="tooltip"
+                  className="pointer-events-none absolute right-0 top-full z-10 mt-1.5 hidden w-56 rounded-md border border-brand/25 bg-white px-2.5 py-2 text-xs font-normal leading-snug text-ink/80 shadow-lg group-hover/help:block group-focus-within/help:block"
+                >
+                  How often to ping after your planned finish time passed but you
+                  haven&apos;t marked the task done.
+                </span>
+              </span>
+            </summary>
+            <div className="mt-3 flex flex-col gap-3">
+              <label className="flex cursor-pointer items-center gap-2 text-sm text-ink/85">
+                <input
+                  type="checkbox"
+                  checked={overduePingEnabled}
+                  onChange={(e) => setOverduePingEnabled(e.target.checked)}
+                  disabled={applyingOverdueInterval}
+                  className="h-4 w-4 rounded border-brand/30 text-brand focus:ring-brand"
+                />
+                Enabled
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1">
+                  <label
+                    htmlFor={overdueMinId}
+                    className="text-xs font-medium text-ink/80"
+                  >
+                    Min (minutes)
+                  </label>
+                  <input
+                    id={overdueMinId}
+                    type="number"
+                    min={1}
+                    max={PING_MAX_MINUTES_CAP}
+                    value={overdueBoundsMin}
+                    onChange={(e) =>
+                      setOverdueBoundsMin(
+                        Number.parseInt(e.target.value, 10) || 0,
+                      )
+                    }
+                    disabled={applyingOverdueInterval || !overduePingEnabled}
+                    className="rounded-md border border-brand/25 px-2 py-1.5 text-sm text-ink outline-none ring-brand/15 focus:border-brand focus:ring-2 disabled:opacity-60"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label
+                    htmlFor={overdueMaxId}
+                    className="text-xs font-medium text-ink/80"
+                  >
+                    Max (minutes)
+                  </label>
+                  <input
+                    id={overdueMaxId}
+                    type="number"
+                    min={1}
+                    max={PING_MAX_MINUTES_CAP}
+                    value={overdueBoundsMax}
+                    onChange={(e) =>
+                      setOverdueBoundsMax(
+                        Number.parseInt(e.target.value, 10) || 0,
+                      )
+                    }
+                    disabled={applyingOverdueInterval || !overduePingEnabled}
+                    className="rounded-md border border-brand/25 px-2 py-1.5 text-sm text-ink outline-none ring-brand/15 focus:border-brand focus:ring-2 disabled:opacity-60"
+                  />
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => void onApplyOverdueInterval()}
+                disabled={applyingOverdueInterval}
+                className="self-start rounded-md border border-brand/30 bg-brand/10 px-3 py-1.5 text-sm font-medium text-ink transition-colors hover:bg-brand/15 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {applyingOverdueInterval ? "Applying…" : "Apply overdue ping"}
+              </button>
+              {overdueIntervalError ? (
+                <p className="text-sm font-medium text-red-600" role="status">
+                  {overdueIntervalError}
                 </p>
               ) : null}
             </div>
@@ -830,7 +1344,7 @@ export default function App() {
       ) : null}
 
       {mainTab === "capture" ? (
-      <form onSubmit={onSubmit} className="flex flex-col gap-3">
+      <form onSubmit={onSubmit} className="flex flex-col gap-2.5">
         {awaitingFollowup && plannedCheckSubject ? (
           <div
             role="status"
@@ -867,10 +1381,10 @@ export default function App() {
               id={labelId}
               value={text}
               onChange={(e) => setText(e.target.value)}
-              rows={5}
+              rows={4}
               disabled={saving || repeating}
               placeholder="Honest answer…"
-              className="min-h-[7.5rem] w-full resize-y rounded-none border-0 bg-transparent px-3 py-2.5 text-sm text-ink outline-none placeholder:text-ink/40 focus:ring-0 disabled:cursor-not-allowed"
+              className="min-h-[6.5rem] w-full resize-y rounded-none border-0 bg-transparent px-3 py-2.5 text-sm text-ink outline-none placeholder:text-ink/40 focus:ring-0 disabled:cursor-not-allowed"
               aria-invalid={error ? true : undefined}
               aria-describedby={
                 [
@@ -939,8 +1453,8 @@ export default function App() {
             className="text-[0.65rem] leading-snug text-ink/45"
           >
             {awaitingFollowup
-              ? 'Use preset chips in the input card, or custom minutes here. “No idea” / blank keeps random next ping.'
-              : `Use preset chips in the input card or type custom 1–${PING_MAX_MINUTES_CAP.toLocaleString()} mins. “No idea” / blank keeps random next ping.`}
+              ? 'Use preset chips in the input card, or custom minutes here. “No idea” / blank keeps random next ping (if enabled on Schedule).'
+              : `Use preset chips in the input card or type custom 1–${PING_MAX_MINUTES_CAP.toLocaleString()} mins. “No idea” / blank uses random ping when enabled on Schedule.`}
           </p>
           <div className="overflow-hidden rounded-md border border-brand/25 bg-white">
             <input
@@ -1007,88 +1521,13 @@ export default function App() {
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div>
           <button
             type="submit"
-            disabled={
-              saving ||
-              repeating ||
-              adjustingMinus ||
-              adjustingPlus ||
-              markingDone
-            }
-            className="cursor-pointer rounded-lg bg-action px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors duration-interaction hover:bg-action-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-action motion-safe:active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={actionBusy}
+            className="w-full cursor-pointer rounded-lg bg-action px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors duration-interaction hover:bg-action-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-action motion-safe:active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
           >
             {saving ? "Saving…" : "Save"}
-          </button>
-          <button
-            type="button"
-            onClick={() => void onMinus15()}
-            disabled={
-              saving ||
-              repeating ||
-              adjustingMinus ||
-              adjustingPlus ||
-              markingDone ||
-              !canAdjustDuration
-            }
-            title="End your last logged segment 15 minutes earlier, then log what happened since."
-            className="cursor-pointer rounded-lg border border-brand/35 bg-white/90 px-3 py-2.5 text-sm font-medium text-ink/90 shadow-sm transition-colors duration-interaction hover:bg-brand/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {adjustingMinus ? "…" : "−15 min"}
-          </button>
-          <button
-            type="button"
-            onClick={() => void onDone()}
-            disabled={
-              saving ||
-              repeating ||
-              adjustingMinus ||
-              adjustingPlus ||
-              markingDone
-            }
-            title="Mark your current timed task as finished and log what you do next."
-            className="cursor-pointer rounded-lg border border-brand/35 bg-white/90 px-3 py-2.5 text-sm font-medium text-ink/90 shadow-sm transition-colors duration-interaction hover:bg-brand/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {markingDone ? "…" : "Done"}
-          </button>
-          <button
-            type="button"
-            onClick={() => void onPlus15()}
-            disabled={
-              saving ||
-              repeating ||
-              adjustingMinus ||
-              adjustingPlus ||
-              markingDone ||
-              !canRepeatLast
-            }
-            title="Add 15 minutes to your last segment and postpone the next ping by 15 minutes."
-            className="cursor-pointer rounded-lg border border-brand/35 bg-white/90 px-3 py-2.5 text-sm font-medium text-ink/90 shadow-sm transition-colors duration-interaction hover:bg-brand/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {adjustingPlus ? "…" : "+15 min"}
-          </button>
-          <button
-            type="button"
-            onClick={() => void onRepeatLast()}
-            disabled={
-              saving ||
-              repeating ||
-              adjustingMinus ||
-              adjustingPlus ||
-              markingDone ||
-              !canRepeatLast
-            }
-            title={
-              canRepeatLast
-                ? "Log the same answer as your last save (no need to retype)."
-                : "Save an answer once to enable this."
-            }
-            className="cursor-pointer rounded-lg border border-brand/35 bg-white/90 px-4 py-2.5 text-sm font-medium text-ink/90 shadow-sm transition-colors duration-interaction hover:bg-brand/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {repeating
-              ? "Saving…"
-              : formatStillButtonLabel(latestCaptureBody)}
           </button>
         </div>
 

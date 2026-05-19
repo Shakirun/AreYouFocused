@@ -41,6 +41,13 @@ pub fn run() {
             #[cfg(desktop)]
             tray::setup_tray(app)?;
 
+            #[cfg(target_os = "windows")]
+            platform::init_notifications(&app.handle());
+
+            if let Some(win) = app.get_webview_window("capture") {
+                let _ = win.set_resizable(false);
+            }
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -54,14 +61,18 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::submit_capture,
+            commands::get_current_activity,
             commands::get_scheduler_status,
             commands::snooze_ping,
             commands::mark_task_done,
+            commands::shorten_last_capture,
             commands::shorten_last_capture_15,
             commands::submit_gap_after_shorten,
+            commands::extend_last_capture,
             commands::extend_last_capture_15,
             commands::repeat_last_capture,
             commands::update_ping_interval,
+            commands::update_overdue_ping_interval,
             commands::list_recent_captures,
             commands::list_activity_digest,
             commands::list_top_quick_picks,
