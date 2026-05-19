@@ -4,6 +4,7 @@ pub mod domain;
 pub mod error;
 pub mod export;
 pub mod platform;
+mod daily_scheduler;
 mod scheduler;
 #[cfg(desktop)]
 mod tray;
@@ -38,7 +39,9 @@ pub fn run() {
 
             let handle = app.handle().clone();
             let notifier = Arc::from(platform::current_notifier());
-            scheduler::spawn_ping_loop(handle, notifier);
+            scheduler::spawn_ping_loop(handle.clone(), notifier);
+            let daily_notifier = Arc::from(platform::current_daily_notifier());
+            daily_scheduler::spawn_daily_reminder_loop(handle, daily_notifier);
 
             #[cfg(desktop)]
             tray::setup_tray(app)?;
@@ -80,6 +83,12 @@ pub fn run() {
             commands::list_top_quick_picks,
             commands::export_history_file,
             commands::history_report_html,
+            commands::history_report_print,
+            commands::get_daily_reminder_presets,
+            commands::get_daily_reminder_settings,
+            commands::set_daily_reminder_enabled,
+            commands::save_daily_reminder,
+            commands::delete_daily_reminder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -44,6 +44,38 @@ type QuickPickRow = {
   count: number;
 };
 
+type DailyReminderRow = {
+  id: number;
+  label: string;
+  times: string[];
+  enabled: boolean;
+  burstCount: number;
+  burstIntervalMin: number;
+  presetKey: string | null;
+  pillNote: string | null;
+};
+
+type DailyReminderSettings = {
+  enabled: boolean;
+  reminders: DailyReminderRow[];
+};
+
+type DailyReminderPreset = {
+  key: string;
+  label: string;
+};
+
+type DailyReminderDraft = {
+  id: number | null;
+  presetKey: string;
+  customLabel: string;
+  pillNote: string;
+  times: string[];
+  enabled: boolean;
+  burstCount: number;
+  burstIntervalMin: number;
+};
+
 type CurrentActivityStatus = {
   body: string | null;
   startedAtUnix: number | null;
@@ -67,6 +99,33 @@ const PING_MAX_MINUTES_CAP = 10_080;
 const PLANNED_DURATION_PRESETS = [5, 15, 30, 60, 120, 240, 360] as const;
 
 const DEFAULT_PLANNED_MINUTES = 30;
+
+const DEFAULT_DAILY_BURST_COUNT = 3;
+const DEFAULT_DAILY_BURST_INTERVAL_MIN = 5;
+
+function emptyDailyDraft(): DailyReminderDraft {
+  return {
+    id: null,
+    presetKey: "water",
+    customLabel: "",
+    pillNote: "",
+    times: ["09:00"],
+    enabled: true,
+    burstCount: DEFAULT_DAILY_BURST_COUNT,
+    burstIntervalMin: DEFAULT_DAILY_BURST_INTERVAL_MIN,
+  };
+}
+
+function draftLabelFromPreset(
+  draft: DailyReminderDraft,
+  presets: DailyReminderPreset[],
+): string {
+  if (draft.presetKey === "custom") {
+    return draft.customLabel.trim();
+  }
+  const p = presets.find((x) => x.key === draft.presetKey);
+  return p?.label ?? draft.customLabel.trim();
+}
 
 function minutesMatchPreset(input: string, minutes: number): boolean {
   const t = input.trim();
@@ -321,6 +380,13 @@ export default function App() {
   );
   const [applyingInterval, setApplyingInterval] = useState(false);
   const [applyingOverdueInterval, setApplyingOverdueInterval] = useState(false);
+  const [dailyReminderEnabled, setDailyReminderEnabled] = useState(false);
+  const [dailyReminders, setDailyReminders] = useState<DailyReminderRow[]>([]);
+  const [dailyPresets, setDailyPresets] = useState<DailyReminderPreset[]>([]);
+  const [dailyDraft, setDailyDraft] = useState<DailyReminderDraft | null>(null);
+  const [dailyError, setDailyError] = useState<string | null>(null);
+  const [dailySaving, setDailySaving] = useState(false);
+  const [dailyTogglingEnabled, setDailyTogglingEnabled] = useState(false);
   const [snoozing, setSnoozing] = useState(false);
   const [repeating, setRepeating] = useState(false);
   const [recentCaptures, setRecentCaptures] = useState<CaptureRow[]>([]);
@@ -437,10 +503,29 @@ export default function App() {
     }
   }, []);
 
+  const refreshDailyReminders = useCallback(async () => {
+    try {
+      const [settings, presets] = await Promise.all([
+        invoke<DailyReminderSettings>("get_daily_reminder_settings"),
+        invoke<DailyReminderPreset[]>("get_daily_reminder_presets"),
+      ]);
+      setDailyReminderEnabled(settings.enabled);
+      setDailyReminders(settings.reminders);
+      setDailyPresets(presets);
+    } catch {
+      setDailyReminders([]);
+    }
+  }, []);
+
   useEffect(() => {
     void refreshSchedulerStatus();
     void refreshCaptureLists();
   }, [refreshSchedulerStatus, refreshCaptureLists]);
+
+  useEffect(() => {
+    if (mainTab !== "schedule") return;
+    void refreshDailyReminders();
+  }, [mainTab, refreshDailyReminders]);
 
   useEffect(() => {
     if (mainTab !== "history") return;
@@ -724,6 +809,89 @@ export default function App() {
     }
   }
 
+  async function onToggleDailyReminderEnabled(enabled: boolean) {
+    setDailyError(null);
+    setDailyTogglingEnabled(true);
+    try {
+      const settings = await invoke<DailyReminderSettings>(
+        "set_daily_reminder_enabled",
+        { enabled },
+      );
+      setDailyReminderEnabled(settings.enabled);
+      setDailyReminders(settings.reminders);
+    } catch (err) {
+      setDailyError(String(err));
+    } finally {
+      setDailyTogglingEnabled(false);
+    }
+  }
+
+  function startEditDailyReminder(row: DailyReminderRow) {
+    setDailyError(null);
+    setDailyDraft({
+      id: row.id,
+      presetKey: row.presetKey ?? "custom",
+      customLabel: row.presetKey ? "" : row.label,
+      pillNote: row.pillNote ?? "",
+      times: row.times.length > 0 ? [...row.times] : ["09:00"],
+      enabled: row.enabled,
+      burstCount: row.burstCount,
+      burstIntervalMin: row.burstIntervalMin,
+    });
+    setScheduleAccordionVersion((v) => v + 1);
+  }
+
+  async function onSaveDailyReminder() {
+    if (!dailyDraft) return;
+    setDailyError(null);
+    const label = draftLabelFromPreset(dailyDraft, dailyPresets);
+    if (!label) {
+      setDailyError("Choose a preset or enter a custom label.");
+      return;
+    }
+    setDailySaving(true);
+    try {
+      const settings = await invoke<DailyReminderSettings>("save_daily_reminder", {
+        input: {
+          id: dailyDraft.id,
+          label,
+          times: dailyDraft.times.filter((t) => t.trim() !== ""),
+          enabled: dailyDraft.enabled,
+          burstCount: dailyDraft.burstCount,
+          burstIntervalMin: dailyDraft.burstIntervalMin,
+          presetKey:
+            dailyDraft.presetKey === "custom" ? null : dailyDraft.presetKey,
+          pillNote:
+            dailyDraft.presetKey === "pills" && dailyDraft.pillNote.trim()
+              ? dailyDraft.pillNote.trim()
+              : null,
+        },
+      });
+      setDailyReminderEnabled(settings.enabled);
+      setDailyReminders(settings.reminders);
+      setDailyDraft(null);
+      setScheduleAccordionVersion((v) => v + 1);
+    } catch (err) {
+      setDailyError(String(err));
+    } finally {
+      setDailySaving(false);
+    }
+  }
+
+  async function onDeleteDailyReminder(id: number) {
+    setDailyError(null);
+    try {
+      const settings = await invoke<DailyReminderSettings>(
+        "delete_daily_reminder",
+        { id },
+      );
+      setDailyReminders(settings.reminders);
+      if (dailyDraft?.id === id) setDailyDraft(null);
+    } catch (err) {
+      setDailyError(String(err));
+    }
+  }
+
   async function onApplyOverdueInterval() {
     setOverdueIntervalError(null);
     if (overdueBoundsMin < 1) {
@@ -768,25 +936,10 @@ export default function App() {
       );
       try {
         if (format === "pdf") {
-          const html = await invoke<string>("history_report_html", {
+          await invoke("history_report_print", {
             sinceUnix,
             untilUnix,
           });
-          const win = window.open(
-            "",
-            "_blank",
-            "noopener,noreferrer,width=920,height=720",
-          );
-          if (!win) {
-            setExportStatus(
-              "Pop-up blocked — allow pop-ups to print or save as PDF.",
-            );
-            return;
-          }
-          win.document.write(html);
-          win.document.close();
-          win.focus();
-          win.print();
           setExportStatus(
             "Print dialog opened — choose “Save as PDF” or a printer.",
           );
@@ -1064,7 +1217,7 @@ export default function App() {
                 type="button"
                 onClick={() => void onDone()}
                 disabled={actionBusy}
-                title="Mark your current timed task as finished and log what you do next."
+                title="Mark your current activity as finished and log elapsed time when you had no planned duration."
                 className="capture-primary-btn"
               >
                 {markingDone ? "…" : "Done"}
@@ -1359,6 +1512,313 @@ export default function App() {
               {overdueIntervalError ? (
                 <p className="text-sm font-medium text-red-600" role="status">
                   {overdueIntervalError}
+                </p>
+              ) : null}
+            </div>
+          </details>
+
+          <details
+            className="rounded-lg border border-brand/20 bg-white/80 px-3 py-2 shadow-sm open:pb-3"
+            onToggle={() => setScheduleAccordionVersion((v) => v + 1)}
+          >
+            <summary className="flex cursor-pointer list-none select-none items-center gap-2 text-sm font-medium text-ink [&::-webkit-details-marker]:hidden">
+              <span className="flex-1">Daily reminder ping</span>
+              <button
+                type="button"
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-brand/25 text-[0.65rem] font-semibold text-ink/60"
+                aria-label="Daily reminder help"
+                title="Gentle self-care nudges (water, food, meds, breaks). Separate from activity pings. Off by default."
+                onClick={(e) => e.preventDefault()}
+                onKeyDown={(e) => e.stopPropagation()}
+              >
+                ?
+              </button>
+            </summary>
+            <div className="mt-3 flex flex-col gap-3">
+              <label className="flex cursor-pointer items-center gap-2 text-sm text-ink/85">
+                <input
+                  type="checkbox"
+                  checked={dailyReminderEnabled}
+                  onChange={(e) =>
+                    void onToggleDailyReminderEnabled(e.target.checked)
+                  }
+                  disabled={dailyTogglingEnabled}
+                  className="h-4 w-4 rounded border-brand/30 text-brand focus:ring-brand"
+                />
+                Enabled
+              </label>
+              <p className="text-[0.65rem] leading-snug text-ink/45">
+                For hyperfocus days — basics like water, food, or medication.
+                Tap Done on a notification to stop further nudges for that
+                reminder only.
+              </p>
+
+              {dailyReminders.length > 0 ? (
+                <ul className="flex flex-col gap-2" aria-label="Daily reminders">
+                  {dailyReminders.map((r) => (
+                    <li
+                      key={r.id}
+                      className="flex flex-wrap items-center gap-2 rounded-md border border-brand/15 bg-brand/[0.03] px-2 py-1.5 text-xs"
+                    >
+                      <span className="font-medium text-ink/90">
+                        {r.label}
+                        {!r.enabled ? (
+                          <span className="ml-1 font-normal text-ink/45">
+                            (paused)
+                          </span>
+                        ) : null}
+                      </span>
+                      <span className="text-ink/50">
+                        {r.times.join(", ")}
+                        {r.burstCount > 1
+                          ? ` · nudge ${r.burstCount}×/${r.burstIntervalMin}m`
+                          : null}
+                      </span>
+                      <span className="ml-auto flex gap-1">
+                        <button
+                          type="button"
+                          onClick={() => startEditDailyReminder(r)}
+                          className="cursor-pointer rounded border border-brand/25 px-2 py-0.5 text-ink/80 hover:bg-brand/10"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void onDeleteDailyReminder(r.id)}
+                          className="cursor-pointer rounded border border-red-200 px-2 py-0.5 text-red-700 hover:bg-red-50"
+                        >
+                          Delete
+                        </button>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-xs text-ink/50">
+                  No reminders yet. Add one below.
+                </p>
+              )}
+
+              {dailyDraft ? (
+                <div className="flex flex-col gap-3 rounded-md border border-brand/20 bg-white/90 p-3">
+                  <p className="text-xs font-medium text-ink/70">
+                    {dailyDraft.id == null ? "New reminder" : "Edit reminder"}
+                  </p>
+                  <div className="flex flex-wrap gap-1.5" role="group" aria-label="Preset">
+                    {dailyPresets.map((p) => (
+                      <button
+                        key={p.key}
+                        type="button"
+                        onClick={() =>
+                          setDailyDraft((d) =>
+                            d ? { ...d, presetKey: p.key } : d,
+                          )
+                        }
+                        className={`cursor-pointer rounded-full border px-2 py-0.5 text-[0.7rem] transition-colors ${
+                          dailyDraft.presetKey === p.key
+                            ? "border-brand bg-brand/15 font-medium text-ink"
+                            : "border-brand/25 text-ink/70 hover:bg-brand/10"
+                        }`}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setDailyDraft((d) =>
+                          d ? { ...d, presetKey: "custom" } : d,
+                        )
+                      }
+                      className={`cursor-pointer rounded-full border px-2 py-0.5 text-[0.7rem] transition-colors ${
+                        dailyDraft.presetKey === "custom"
+                          ? "border-brand bg-brand/15 font-medium text-ink"
+                          : "border-brand/25 text-ink/70 hover:bg-brand/10"
+                      }`}
+                    >
+                      Custom
+                    </button>
+                  </div>
+                  {dailyDraft.presetKey === "custom" ? (
+                    <input
+                      type="text"
+                      value={dailyDraft.customLabel}
+                      onChange={(e) =>
+                        setDailyDraft((d) =>
+                          d ? { ...d, customLabel: e.target.value } : d,
+                        )
+                      }
+                      placeholder="Reminder text"
+                      className="rounded-md border border-brand/25 px-2 py-1.5 text-sm text-ink outline-none focus:border-brand focus:ring-2 focus:ring-brand/15"
+                    />
+                  ) : null}
+                  {dailyDraft.presetKey === "pills" ? (
+                    <input
+                      type="text"
+                      value={dailyDraft.pillNote}
+                      onChange={(e) =>
+                        setDailyDraft((d) =>
+                          d ? { ...d, pillNote: e.target.value } : d,
+                        )
+                      }
+                      placeholder="Medication name (optional)"
+                      className="rounded-md border border-brand/25 px-2 py-1.5 text-sm text-ink outline-none focus:border-brand focus:ring-2 focus:ring-brand/15"
+                    />
+                  ) : null}
+                  <div className="flex flex-col gap-2">
+                    <span className="text-xs font-medium text-ink/80">
+                      Times (local)
+                    </span>
+                    {dailyDraft.times.map((t, i) => (
+                      <div key={i} className="flex gap-2">
+                        <input
+                          type="time"
+                          value={t}
+                          onChange={(e) =>
+                            setDailyDraft((d) => {
+                              if (!d) return d;
+                              const times = [...d.times];
+                              times[i] = e.target.value;
+                              return { ...d, times };
+                            })
+                          }
+                          className="rounded-md border border-brand/25 px-2 py-1.5 text-sm text-ink"
+                        />
+                        {dailyDraft.times.length > 1 ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setDailyDraft((d) => {
+                                if (!d) return d;
+                                return {
+                                  ...d,
+                                  times: d.times.filter((_, j) => j !== i),
+                                };
+                              })
+                            }
+                            className="cursor-pointer text-xs text-ink/50 hover:text-red-600"
+                          >
+                            Remove
+                          </button>
+                        ) : null}
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setDailyDraft((d) =>
+                          d ? { ...d, times: [...d.times, "12:00"] } : d,
+                        )
+                      }
+                      className="self-start cursor-pointer text-xs font-medium text-brand hover:underline"
+                    >
+                      + Add time
+                    </button>
+                  </div>
+                  <fieldset className="flex flex-col gap-2 border-0 p-0">
+                    <legend className="text-xs font-medium text-ink/80">
+                      Nudge until done
+                    </legend>
+                    <p className="text-[0.65rem] leading-snug text-ink/45">
+                      Repeat this reminder a few times until you tap Done on the
+                      notification.
+                    </p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs text-ink/70">Count</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={10}
+                          value={dailyDraft.burstCount}
+                          onChange={(e) =>
+                            setDailyDraft((d) =>
+                              d
+                                ? {
+                                    ...d,
+                                    burstCount:
+                                      Number.parseInt(e.target.value, 10) ||
+                                      1,
+                                  }
+                                : d,
+                            )
+                          }
+                          className="rounded-md border border-brand/25 px-2 py-1.5 text-sm"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs text-ink/70">
+                          Every (min)
+                        </label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={60}
+                          value={dailyDraft.burstIntervalMin}
+                          onChange={(e) =>
+                            setDailyDraft((d) =>
+                              d
+                                ? {
+                                    ...d,
+                                    burstIntervalMin:
+                                      Number.parseInt(e.target.value, 10) ||
+                                      5,
+                                  }
+                                : d,
+                            )
+                          }
+                          className="rounded-md border border-brand/25 px-2 py-1.5 text-sm"
+                        />
+                      </div>
+                    </div>
+                  </fieldset>
+                  <label className="flex cursor-pointer items-center gap-2 text-sm text-ink/85">
+                    <input
+                      type="checkbox"
+                      checked={dailyDraft.enabled}
+                      onChange={(e) =>
+                        setDailyDraft((d) =>
+                          d ? { ...d, enabled: e.target.checked } : d,
+                        )
+                      }
+                      className="h-4 w-4 rounded border-brand/30 text-brand"
+                    />
+                    Reminder active
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      disabled={dailySaving}
+                      onClick={() => void onSaveDailyReminder()}
+                      className="cursor-pointer rounded-md border border-brand/30 bg-brand/10 px-3 py-1.5 text-sm font-medium text-ink hover:bg-brand/15 disabled:opacity-60"
+                    >
+                      {dailySaving ? "Saving…" : "Save reminder"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDailyDraft(null)}
+                      className="cursor-pointer rounded-md border border-brand/20 px-3 py-1.5 text-sm text-ink/70 hover:bg-brand/5"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  disabled={!dailyReminderEnabled}
+                  onClick={() => {
+                    setDailyDraft(emptyDailyDraft());
+                    setScheduleAccordionVersion((v) => v + 1);
+                  }}
+                  className="self-start cursor-pointer rounded-md border border-dashed border-brand/35 px-3 py-1.5 text-sm text-ink/80 hover:bg-brand/5 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  + Add reminder
+                </button>
+              )}
+              {dailyError ? (
+                <p className="text-sm font-medium text-red-600" role="status">
+                  {dailyError}
                 </p>
               ) : null}
             </div>

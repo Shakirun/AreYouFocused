@@ -1,3 +1,6 @@
+use crate::db::daily_reminder::{
+    self, DailyReminderSettings, SaveDailyReminderInput, PRESET_CATALOG,
+};
 use crate::db::repo::{self, ShortenGapInfo};
 use crate::error::AppError;
 use crate::export::{self, HistoryReport};
@@ -6,7 +9,8 @@ use rusqlite::Connection;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::webview::PageLoadEvent;
 use tauri_plugin_dialog::DialogExt;
 
 #[derive(Debug, Deserialize)]
@@ -99,7 +103,7 @@ pub fn get_scheduler_status(state: State<'_, AppState>) -> Result<SchedulerStatu
 pub fn mark_task_done(state: State<'_, AppState>) -> Result<SchedulerStatus, AppError> {
     let mut db = state.db.lock().unwrap_or_else(|e| e.into_inner());
     let conn = &mut *db;
-    repo::mark_latest_timed_capture_finished(conn)?;
+    repo::mark_latest_timed_capture_finished(conn, unix_now())?;
     read_scheduler_status(conn)
 }
 
@@ -382,6 +386,117 @@ pub fn history_report_html(
 ) -> Result<String, AppError> {
     let report = build_report_locked(&state, since_unix, until_unix)?;
     Ok(export::report_to_html(&report))
+}
+
+const HISTORY_REPORT_WINDOW_LABEL: &str = "history-report";
+
+/// Open a dedicated webview with the report and trigger the system print dialog.
+///
+/// Uses a Tauri webview instead of `window.open()` (blocked in the embedded webview).
+#[tauri::command]
+pub async fn history_report_print(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    since_unix: i64,
+    until_unix: i64,
+) -> Result<(), AppError> {
+    let report = build_report_locked(&state, since_unix, until_unix)?;
+    let html = export::report_to_html(&report);
+
+    let temp_dir = app
+        .path()
+        .temp_dir()
+        .map_err(|e| AppError::Export(e.to_string()))?;
+    let html_path = temp_dir.join(format!(
+        "areyoufocused-report-{}.html",
+        unix_now()
+    ));
+    std::fs::write(&html_path, html).map_err(|e| AppError::Export(e.to_string()))?;
+
+    let file_url = tauri::Url::from_file_path(&html_path)
+        .map_err(|_| AppError::Export("could not build report file URL".into()))?;
+
+    if let Some(existing) = app.get_webview_window(HISTORY_REPORT_WINDOW_LABEL) {
+        let _ = existing.close();
+    }
+
+    WebviewWindowBuilder::new(
+        &app,
+        HISTORY_REPORT_WINDOW_LABEL,
+        WebviewUrl::External(file_url),
+    )
+    .title("AreYouFocused — History report")
+    .inner_size(920.0, 720.0)
+    .center()
+    .on_page_load(|window, payload| {
+        if payload.event() == PageLoadEvent::Finished {
+            let _ = window.eval("window.print();");
+        }
+    })
+    .build()
+    .map_err(|e| AppError::Export(e.to_string()))?;
+
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyReminderPreset {
+    pub key: String,
+    pub label: String,
+}
+
+#[tauri::command]
+pub fn get_daily_reminder_presets() -> Vec<DailyReminderPreset> {
+    PRESET_CATALOG
+        .iter()
+        .map(|(key, label)| DailyReminderPreset {
+            key: (*key).to_string(),
+            label: (*label).to_string(),
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub fn get_daily_reminder_settings(
+    state: State<'_, AppState>,
+) -> Result<DailyReminderSettings, AppError> {
+    let db = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = &*db;
+    Ok(daily_reminder::read_daily_reminder_settings(conn)?)
+}
+
+#[tauri::command]
+pub fn set_daily_reminder_enabled(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<DailyReminderSettings, AppError> {
+    let mut db = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = &mut *db;
+    daily_reminder::set_daily_reminder_enabled(conn, enabled)?;
+    Ok(daily_reminder::read_daily_reminder_settings(conn)?)
+}
+
+#[tauri::command]
+pub fn save_daily_reminder(
+    state: State<'_, AppState>,
+    input: SaveDailyReminderInput,
+) -> Result<DailyReminderSettings, AppError> {
+    let mut db = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = &mut *db;
+    daily_reminder::save_daily_reminder(conn, &input)?;
+    Ok(daily_reminder::read_daily_reminder_settings(conn)?)
+}
+
+#[tauri::command]
+pub fn delete_daily_reminder(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<DailyReminderSettings, AppError> {
+    let mut db = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = &mut *db;
+    daily_reminder::delete_daily_reminder(conn, id)?;
+    Ok(daily_reminder::read_daily_reminder_settings(conn)?)
 }
 
 /// Top distinct capture texts by frequency (for quick-insert chips in the capture UI).
