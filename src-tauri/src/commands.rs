@@ -1,4 +1,4 @@
-use crate::db::repo;
+use crate::db::repo::{self, ShortenGapInfo};
 use crate::error::AppError;
 use crate::AppState;
 use rusqlite::Connection;
@@ -10,6 +10,14 @@ use tauri::State;
 #[serde(rename_all = "camelCase")]
 pub struct SubmitCaptureInput {
     pub text: String,
+    pub planned_duration_minutes: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmitGapAfterShortenInput {
+    pub text: String,
+    pub gap_minutes: i64,
     pub planned_duration_minutes: Option<i64>,
 }
 
@@ -56,10 +64,55 @@ pub fn get_scheduler_status(state: State<'_, AppState>) -> Result<SchedulerStatu
 }
 
 #[tauri::command]
+pub fn mark_task_done(state: State<'_, AppState>) -> Result<SchedulerStatus, AppError> {
+    let mut db = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = &mut *db;
+    repo::mark_latest_timed_capture_finished(conn)?;
+    read_scheduler_status(conn)
+}
+
+#[tauri::command]
 pub fn snooze_ping(state: State<'_, AppState>) -> Result<SchedulerStatus, AppError> {
     let mut db = state.db.lock().unwrap_or_else(|e| e.into_inner());
     let conn = &mut *db;
     repo::snooze_next_ping(conn, unix_now())?;
+    read_scheduler_status(conn)
+}
+
+#[tauri::command]
+pub fn shorten_last_capture_15(
+    state: State<'_, AppState>,
+) -> Result<ShortenGapInfo, AppError> {
+    let mut db = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = &mut *db;
+    repo::shorten_last_capture_duration(conn, unix_now(), repo::TOAST_ADJUST_MINUTES)
+}
+
+#[tauri::command]
+pub fn submit_gap_after_shorten(
+    state: State<'_, AppState>,
+    input: SubmitGapAfterShortenInput,
+) -> Result<SchedulerStatus, AppError> {
+    let mut db = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = &mut *db;
+    repo::persist_gap_after_shorten(
+        conn,
+        &input.text,
+        unix_now(),
+        input.gap_minutes,
+        input.planned_duration_minutes,
+        &mut rand::thread_rng(),
+    )?;
+    read_scheduler_status(conn)
+}
+
+#[tauri::command]
+pub fn extend_last_capture_15(
+    state: State<'_, AppState>,
+) -> Result<SchedulerStatus, AppError> {
+    let mut db = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = &mut *db;
+    repo::extend_last_capture_and_delay_ping(conn, unix_now(), repo::TOAST_ADJUST_MINUTES)?;
     read_scheduler_status(conn)
 }
 

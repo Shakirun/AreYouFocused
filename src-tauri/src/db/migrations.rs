@@ -6,6 +6,7 @@ pub fn apply_initial(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(INITIAL_SQL)?;
     migrate_scheduler_followup(conn)?;
     migrate_captures_analytics(conn)?;
+    migrate_captures_finished(conn)?;
     Ok(())
 }
 
@@ -66,6 +67,17 @@ fn migrate_captures_analytics(conn: &Connection) -> rusqlite::Result<()> {
         conn.execute("ALTER TABLE captures ADD COLUMN thread_root TEXT", [])?;
         conn.execute(
             "UPDATE captures SET thread_root = body WHERE thread_root IS NULL",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+/// Explicit task completion (`repo::mark_latest_timed_capture_finished`).
+fn migrate_captures_finished(conn: &Connection) -> rusqlite::Result<()> {
+    if !captures_column_exists(conn, "finished")? {
+        conn.execute(
+            "ALTER TABLE captures ADD COLUMN finished INTEGER NOT NULL DEFAULT 0",
             [],
         )?;
     }

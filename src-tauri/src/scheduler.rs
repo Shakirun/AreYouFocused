@@ -26,6 +26,35 @@ fn sleep_secs_until(next_unix: i64, now_unix: i64) -> u64 {
     }
 }
 
+/// Re-read `next_ping_at` frequently so snooze / capture updates can shorten an in-flight sleep.
+const SLEEP_POLL_SECS: u64 = 5;
+
+async fn sleep_until_next_ping_due(handle: &AppHandle) {
+    loop {
+        let sleep_secs = {
+            let state = handle.state::<AppState>();
+            let mut db = state.db.lock().unwrap_or_else(|p| p.into_inner());
+            let conn = &mut *db;
+            let mut rng = rand::thread_rng();
+            let now = unix_now();
+            match repo::ensure_next_ping_scheduled(conn, now, &mut rng) {
+                Ok(next) => sleep_secs_until(next, unix_now()),
+                Err(e) => {
+                    tracing::error!("scheduler: ensure next ping: {e}");
+                    60u64
+                }
+            }
+        };
+
+        if sleep_secs == 0 {
+            break;
+        }
+
+        let chunk = sleep_secs.min(SLEEP_POLL_SECS);
+        tokio::time::sleep(Duration::from_secs(chunk)).await;
+    }
+}
+
 /// Fixed interval in seconds for local QA (see module docs).
 fn dev_ping_secs() -> Option<u64> {
     std::env::var("AREYOUFOCUSED_DEV_PING_SECS")
@@ -53,24 +82,7 @@ pub fn spawn_ping_loop(handle: AppHandle, notifier: Arc<dyn PingNotifier>) {
             if let Some(dev_s) = dev_secs {
                 tokio::time::sleep(Duration::from_secs(dev_s)).await;
             } else {
-                let sleep_secs = {
-                    let state = handle.state::<AppState>();
-                    let mut db = state.db.lock().unwrap_or_else(|p| p.into_inner());
-                    let conn = &mut *db;
-                    let mut rng = rand::thread_rng();
-                    let now = unix_now();
-                    match repo::ensure_next_ping_scheduled(conn, now, &mut rng) {
-                        Ok(next) => sleep_secs_until(next, unix_now()),
-                        Err(e) => {
-                            tracing::error!("scheduler: ensure next ping: {e}");
-                            60u64
-                        }
-                    }
-                };
-
-                if sleep_secs > 0 {
-                    tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
-                }
+                sleep_until_next_ping_due(&handle).await;
             }
 
             if let Err(e) = notifier.notify_ping_due(&handle) {
@@ -99,7 +111,7 @@ pub fn spawn_ping_loop(handle: AppHandle, notifier: Arc<dyn PingNotifier>) {
                     let now = unix_now();
                     match repo::get_next_ping_kind(conn)? {
                         repo::NextPingKind::PlannedCheck => {
-                            repo::apply_after_planned_check_ping(conn, now, &mut rng)?;
+                            repo::apply_after_planned_check_ping(conn)?;
                         }
                         repo::NextPingKind::Standard => {
                             repo::schedule_random_next_ping(conn, now, &mut rng)?;
