@@ -1,6 +1,7 @@
 use super::aumid;
 use super::win_toast::{self, PingToastContent, ToastButton, TOAST_LAUNCH_FOCUS};
-use super::PingNotifier;
+use super::{DailyReminderNotifier, PingNotifier};
+use crate::db::daily_reminder;
 use crate::db::repo::{self, NextPingKind};
 use crate::error::AppError;
 use crate::window_util;
@@ -16,6 +17,7 @@ const TOAST_ACTION_SNOOZE: &str = "snooze";
 const TOAST_ACTION_MINUS_15: &str = "minus_15";
 const TOAST_ACTION_DONE: &str = "done";
 const TOAST_ACTION_PLUS_15: &str = "plus_15";
+const TOAST_ACTION_DAILY_DONE_PREFIX: &str = "daily_done_";
 
 static AUMID_READY: OnceLock<()> = OnceLock::new();
 
@@ -84,11 +86,19 @@ fn plus_15_from_toast(app: &AppHandle) -> Result<(), AppError> {
     Ok(())
 }
 
+fn daily_done_from_toast(app: &AppHandle, reminder_id: i64) -> Result<(), AppError> {
+    let state = app.state::<AppState>();
+    let mut db = state.db.lock().unwrap_or_else(|p| p.into_inner());
+    let conn = &mut *db;
+    daily_reminder::daily_done_from_toast(conn, reminder_id)?;
+    Ok(())
+}
+
 fn done_from_toast(app: &AppHandle) -> Result<(), AppError> {
     let state = app.state::<AppState>();
     let mut db = state.db.lock().unwrap_or_else(|p| p.into_inner());
     let conn = &mut *db;
-    repo::mark_latest_timed_capture_finished(conn)?;
+    repo::mark_latest_timed_capture_finished(conn, unix_now())?;
     let _ = app.emit("scheduler-updated", ());
     window_util::show_and_focus_capture(app);
     Ok(())
@@ -150,7 +160,21 @@ fn focus_capture_on_main(app: &AppHandle) {
     }
 }
 
+fn parse_daily_done(action: &str) -> Option<i64> {
+    action
+        .strip_prefix(TOAST_ACTION_DAILY_DONE_PREFIX)
+        .and_then(|id| id.parse().ok())
+}
+
 fn dispatch_toast_action(app: &AppHandle, action: Option<&str>) {
+    if let Some(a) = action {
+        if let Some(id) = parse_daily_done(a) {
+            if let Err(e) = daily_done_from_toast(app, id) {
+                tracing::warn!("toast daily done: {e}");
+            }
+            return;
+        }
+    }
     match action {
         Some(TOAST_ACTION_STILL) => {
             if let Err(e) = still_from_toast(app) {
@@ -184,6 +208,43 @@ fn dispatch_toast_action(app: &AppHandle, action: Option<&str>) {
             tracing::debug!("toast activation unknown action {other:?}, focusing window");
             focus_capture_on_main(app);
         }
+    }
+}
+
+impl DailyReminderNotifier for WindowsNotifier {
+    fn notify_daily_reminder(
+        &self,
+        app: &AppHandle,
+        label: &str,
+        reminder_id: i64,
+    ) -> Result<(), AppError> {
+        ensure_aumid(app);
+
+        let line = trim_for_toast_line(label, 120);
+        let action = format!("{TOAST_ACTION_DAILY_DONE_PREFIX}{reminder_id}");
+        let app_id = toast_app_id(app);
+        let app_for_activation = app.clone();
+
+        let content = PingToastContent {
+            title: "Daily reminder".to_string(),
+            line2: line,
+            buttons: vec![ToastButton {
+                label: "Done".to_string(),
+                action,
+            }],
+        };
+
+        win_toast::show_ping_toast(&app_id, &content, move |activated| {
+            let app = app_for_activation.clone();
+            let app_main = app.clone();
+            if let Err(e) = app.run_on_main_thread(move || {
+                dispatch_toast_action(&app_main, activated.as_deref());
+            }) {
+                tracing::warn!("daily toast activation: run_on_main_thread failed: {e}");
+            }
+            Ok(())
+        })
+        .map_err(|e| AppError::Notify(e.to_string()))
     }
 }
 

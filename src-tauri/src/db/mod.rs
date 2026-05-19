@@ -1,6 +1,7 @@
 //! SQLite connection and migrations.
 
 mod migrations;
+pub mod daily_reminder;
 pub mod repo;
 
 use rusqlite::Connection;

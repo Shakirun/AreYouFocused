@@ -32,9 +32,48 @@ type MainTab = "capture" | "history" | "schedule";
 
 type DigestPeriod = "day" | "week" | "month" | "all";
 
+type ExportRangePreset = "today" | "this_week" | "last_7" | "custom";
+
+type ExportHistoryResult = {
+  saved: boolean;
+  path?: string | null;
+};
+
 type QuickPickRow = {
   body: string;
   count: number;
+};
+
+type DailyReminderRow = {
+  id: number;
+  label: string;
+  times: string[];
+  enabled: boolean;
+  burstCount: number;
+  burstIntervalMin: number;
+  presetKey: string | null;
+  pillNote: string | null;
+};
+
+type DailyReminderSettings = {
+  enabled: boolean;
+  reminders: DailyReminderRow[];
+};
+
+type DailyReminderPreset = {
+  key: string;
+  label: string;
+};
+
+type DailyReminderDraft = {
+  id: number | null;
+  presetKey: string;
+  customLabel: string;
+  pillNote: string;
+  times: string[];
+  enabled: boolean;
+  burstCount: number;
+  burstIntervalMin: number;
 };
 
 type CurrentActivityStatus = {
@@ -60,6 +99,33 @@ const PING_MAX_MINUTES_CAP = 10_080;
 const PLANNED_DURATION_PRESETS = [5, 15, 30, 60, 120, 240, 360] as const;
 
 const DEFAULT_PLANNED_MINUTES = 30;
+
+const DEFAULT_DAILY_BURST_COUNT = 3;
+const DEFAULT_DAILY_BURST_INTERVAL_MIN = 5;
+
+function emptyDailyDraft(): DailyReminderDraft {
+  return {
+    id: null,
+    presetKey: "water",
+    customLabel: "",
+    pillNote: "",
+    times: ["09:00"],
+    enabled: true,
+    burstCount: DEFAULT_DAILY_BURST_COUNT,
+    burstIntervalMin: DEFAULT_DAILY_BURST_INTERVAL_MIN,
+  };
+}
+
+function draftLabelFromPreset(
+  draft: DailyReminderDraft,
+  presets: DailyReminderPreset[],
+): string {
+  if (draft.presetKey === "custom") {
+    return draft.customLabel.trim();
+  }
+  const p = presets.find((x) => x.key === draft.presetKey);
+  return p?.label ?? draft.customLabel.trim();
+}
 
 function minutesMatchPreset(input: string, minutes: number): boolean {
   const t = input.trim();
@@ -95,6 +161,78 @@ function digestSinceUnix(period: DigestPeriod): number {
       return _exhaustive;
     }
   }
+}
+
+function todayDateInputValue(d: Date = new Date()): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function startOfLocalDayUnix(d: Date = new Date()): number {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return Math.floor(x.getTime() / 1000);
+}
+
+/** Week starts Monday (local). */
+function startOfLocalWeekUnix(d: Date = new Date()): number {
+  const x = new Date(d);
+  const day = x.getDay();
+  const diff = (day + 6) % 7;
+  x.setDate(x.getDate() - diff);
+  x.setHours(0, 0, 0, 0);
+  return Math.floor(x.getTime() / 1000);
+}
+
+function exportRangeUnixBounds(
+  preset: ExportRangePreset,
+  customStart: string,
+  customEnd: string,
+): { sinceUnix: number; untilUnix: number } {
+  const untilUnix = Math.floor(Date.now() / 1000);
+  switch (preset) {
+    case "today":
+      return { sinceUnix: startOfLocalDayUnix(), untilUnix };
+    case "this_week":
+      return { sinceUnix: startOfLocalWeekUnix(), untilUnix };
+    case "last_7":
+      return { sinceUnix: untilUnix - 7 * 86_400, untilUnix };
+    case "custom": {
+      const start = customStart
+        ? new Date(`${customStart}T00:00:00`)
+        : new Date(0);
+      const end = customEnd
+        ? new Date(`${customEnd}T23:59:59`)
+        : new Date(untilUnix * 1000);
+      return {
+        sinceUnix: Math.floor(start.getTime() / 1000),
+        untilUnix: Math.floor(end.getTime() / 1000),
+      };
+    }
+    default: {
+      const _exhaustive: never = preset;
+      return _exhaustive;
+    }
+  }
+}
+
+function formatExportRangeLabel(
+  preset: ExportRangePreset,
+  customStart: string,
+  customEnd: string,
+): string {
+  const { sinceUnix, untilUnix } = exportRangeUnixBounds(
+    preset,
+    customStart,
+    customEnd,
+  );
+  const opts: Intl.DateTimeFormatOptions = {
+    dateStyle: "medium",
+    timeStyle: "short",
+  };
+  return `${new Date(sinceUnix * 1000).toLocaleString(undefined, opts)} → ${new Date(untilUnix * 1000).toLocaleString(undefined, opts)}`;
 }
 
 function formatSegmentMinutes(m: number): string {
@@ -200,7 +338,8 @@ function stillAriaLabel(body: string): string {
 
 /** Quick-capture shell. All user-facing strings are English until i18n (see /I18N.md). */
 export default function App() {
-  useFitWindowHeight();
+  const mainRef = useRef<HTMLElement>(null);
+  const [scheduleAccordionVersion, setScheduleAccordionVersion] = useState(0);
 
   const labelId = useId();
   const quickPicksLegendId = useId();
@@ -241,6 +380,13 @@ export default function App() {
   );
   const [applyingInterval, setApplyingInterval] = useState(false);
   const [applyingOverdueInterval, setApplyingOverdueInterval] = useState(false);
+  const [dailyReminderEnabled, setDailyReminderEnabled] = useState(false);
+  const [dailyReminders, setDailyReminders] = useState<DailyReminderRow[]>([]);
+  const [dailyPresets, setDailyPresets] = useState<DailyReminderPreset[]>([]);
+  const [dailyDraft, setDailyDraft] = useState<DailyReminderDraft | null>(null);
+  const [dailyError, setDailyError] = useState<string | null>(null);
+  const [dailySaving, setDailySaving] = useState(false);
+  const [dailyTogglingEnabled, setDailyTogglingEnabled] = useState(false);
   const [snoozing, setSnoozing] = useState(false);
   const [repeating, setRepeating] = useState(false);
   const [recentCaptures, setRecentCaptures] = useState<CaptureRow[]>([]);
@@ -249,6 +395,16 @@ export default function App() {
   const [digestPeriod, setDigestPeriod] = useState<DigestPeriod>("week");
   const [digest, setDigest] = useState<ActivityDigestRow[]>([]);
   const [digestCopied, setDigestCopied] = useState(false);
+  const [exportPreset, setExportPreset] =
+    useState<ExportRangePreset>("last_7");
+  const [exportCustomStart, setExportCustomStart] = useState(() =>
+    todayDateInputValue(),
+  );
+  const [exportCustomEnd, setExportCustomEnd] = useState(() =>
+    todayDateInputValue(),
+  );
+  const [exportStatus, setExportStatus] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
   const [adjustingMinus, setAdjustingMinus] = useState(false);
   const [adjustingPlus, setAdjustingPlus] = useState(false);
   const [markingDone, setMarkingDone] = useState(false);
@@ -347,10 +503,29 @@ export default function App() {
     }
   }, []);
 
+  const refreshDailyReminders = useCallback(async () => {
+    try {
+      const [settings, presets] = await Promise.all([
+        invoke<DailyReminderSettings>("get_daily_reminder_settings"),
+        invoke<DailyReminderPreset[]>("get_daily_reminder_presets"),
+      ]);
+      setDailyReminderEnabled(settings.enabled);
+      setDailyReminders(settings.reminders);
+      setDailyPresets(presets);
+    } catch {
+      setDailyReminders([]);
+    }
+  }, []);
+
   useEffect(() => {
     void refreshSchedulerStatus();
     void refreshCaptureLists();
   }, [refreshSchedulerStatus, refreshCaptureLists]);
+
+  useEffect(() => {
+    if (mainTab !== "schedule") return;
+    void refreshDailyReminders();
+  }, [mainTab, refreshDailyReminders]);
 
   useEffect(() => {
     if (mainTab !== "history") return;
@@ -634,6 +809,89 @@ export default function App() {
     }
   }
 
+  async function onToggleDailyReminderEnabled(enabled: boolean) {
+    setDailyError(null);
+    setDailyTogglingEnabled(true);
+    try {
+      const settings = await invoke<DailyReminderSettings>(
+        "set_daily_reminder_enabled",
+        { enabled },
+      );
+      setDailyReminderEnabled(settings.enabled);
+      setDailyReminders(settings.reminders);
+    } catch (err) {
+      setDailyError(String(err));
+    } finally {
+      setDailyTogglingEnabled(false);
+    }
+  }
+
+  function startEditDailyReminder(row: DailyReminderRow) {
+    setDailyError(null);
+    setDailyDraft({
+      id: row.id,
+      presetKey: row.presetKey ?? "custom",
+      customLabel: row.presetKey ? "" : row.label,
+      pillNote: row.pillNote ?? "",
+      times: row.times.length > 0 ? [...row.times] : ["09:00"],
+      enabled: row.enabled,
+      burstCount: row.burstCount,
+      burstIntervalMin: row.burstIntervalMin,
+    });
+    setScheduleAccordionVersion((v) => v + 1);
+  }
+
+  async function onSaveDailyReminder() {
+    if (!dailyDraft) return;
+    setDailyError(null);
+    const label = draftLabelFromPreset(dailyDraft, dailyPresets);
+    if (!label) {
+      setDailyError("Choose a preset or enter a custom label.");
+      return;
+    }
+    setDailySaving(true);
+    try {
+      const settings = await invoke<DailyReminderSettings>("save_daily_reminder", {
+        input: {
+          id: dailyDraft.id,
+          label,
+          times: dailyDraft.times.filter((t) => t.trim() !== ""),
+          enabled: dailyDraft.enabled,
+          burstCount: dailyDraft.burstCount,
+          burstIntervalMin: dailyDraft.burstIntervalMin,
+          presetKey:
+            dailyDraft.presetKey === "custom" ? null : dailyDraft.presetKey,
+          pillNote:
+            dailyDraft.presetKey === "pills" && dailyDraft.pillNote.trim()
+              ? dailyDraft.pillNote.trim()
+              : null,
+        },
+      });
+      setDailyReminderEnabled(settings.enabled);
+      setDailyReminders(settings.reminders);
+      setDailyDraft(null);
+      setScheduleAccordionVersion((v) => v + 1);
+    } catch (err) {
+      setDailyError(String(err));
+    } finally {
+      setDailySaving(false);
+    }
+  }
+
+  async function onDeleteDailyReminder(id: number) {
+    setDailyError(null);
+    try {
+      const settings = await invoke<DailyReminderSettings>(
+        "delete_daily_reminder",
+        { id },
+      );
+      setDailyReminders(settings.reminders);
+      if (dailyDraft?.id === id) setDailyDraft(null);
+    } catch (err) {
+      setDailyError(String(err));
+    }
+  }
+
   async function onApplyOverdueInterval() {
     setOverdueIntervalError(null);
     if (overdueBoundsMin < 1) {
@@ -666,6 +924,45 @@ export default function App() {
       setApplyingOverdueInterval(false);
     }
   }
+
+  const runHistoryExport = useCallback(
+    async (format: "csv" | "xlsx" | "pdf") => {
+      setExporting(true);
+      setExportStatus(null);
+      const { sinceUnix, untilUnix } = exportRangeUnixBounds(
+        exportPreset,
+        exportCustomStart,
+        exportCustomEnd,
+      );
+      try {
+        if (format === "pdf") {
+          await invoke("history_report_print", {
+            sinceUnix,
+            untilUnix,
+          });
+          setExportStatus(
+            "Print dialog opened — choose “Save as PDF” or a printer.",
+          );
+          return;
+        }
+        const result = await invoke<ExportHistoryResult>("export_history_file", {
+          input: { format, sinceUnix, untilUnix },
+        });
+        if (!result.saved) {
+          setExportStatus("Export cancelled.");
+          return;
+        }
+        setExportStatus(
+          result.path ? `Saved to ${result.path}` : "Report saved.",
+        );
+      } catch (e) {
+        setExportStatus(e instanceof Error ? e.message : String(e));
+      } finally {
+        setExporting(false);
+      }
+    },
+    [exportPreset, exportCustomStart, exportCustomEnd],
+  );
 
   async function copyDigestSummary() {
     if (digest.length === 0) return;
@@ -763,8 +1060,23 @@ export default function App() {
     currentActivity?.durationMinutes != null &&
     currentActivity.durationMinutes > 0;
 
+  useFitWindowHeight(mainRef, [
+    mainTab,
+    scheduleAccordionVersion,
+    gapFillPrompt != null,
+    showCurrentActivity,
+    showManage,
+    awaitingFollowup,
+    recentCaptures.length,
+    digest.length,
+    quickPicks.length,
+  ]);
+
   return (
-    <main className="mx-auto flex max-w-md flex-col gap-3 px-4 py-5">
+    <main
+      ref={mainRef}
+      className="mx-auto flex max-w-md flex-col gap-3 px-4 py-5"
+    >
       <nav
         className="flex gap-1 rounded-xl border border-brand/20 bg-white/70 p-1 shadow-sm"
         role="tablist"
@@ -905,7 +1217,7 @@ export default function App() {
                 type="button"
                 onClick={() => void onDone()}
                 disabled={actionBusy}
-                title="Mark your current timed task as finished and log what you do next."
+                title="Mark your current activity as finished and log elapsed time when you had no planned duration."
                 className="capture-primary-btn"
               >
                 {markingDone ? "…" : "Done"}
@@ -1029,25 +1341,22 @@ export default function App() {
             ) : null}
           </header>
 
-          <details className="rounded-lg border border-brand/20 bg-white/80 px-3 py-2 shadow-sm open:pb-3">
+          <details
+            className="rounded-lg border border-brand/20 bg-white/80 px-3 py-2 shadow-sm open:pb-3"
+            onToggle={() => setScheduleAccordionVersion((v) => v + 1)}
+          >
             <summary className="flex cursor-pointer list-none select-none items-center gap-2 text-sm font-medium text-ink [&::-webkit-details-marker]:hidden">
               <span className="flex-1">Random ping</span>
-              <span
-                className="group/help relative flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-brand/25 text-[0.65rem] font-semibold text-ink/60"
-                role="img"
+              <button
+                type="button"
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-brand/25 text-[0.65rem] font-semibold text-ink/60"
                 aria-label="Random ping help"
+                title='How often to ping when you chose "No idea" — no planned duration on the capture.'
                 onClick={(e) => e.preventDefault()}
                 onKeyDown={(e) => e.stopPropagation()}
               >
                 ?
-                <span
-                  role="tooltip"
-                  className="pointer-events-none absolute right-0 top-full z-10 mt-1.5 hidden w-56 rounded-md border border-brand/25 bg-white px-2.5 py-2 text-xs font-normal leading-snug text-ink/80 shadow-lg group-hover/help:block group-focus-within/help:block"
-                >
-                  How often to ping when you chose &ldquo;No idea&rdquo; — no planned
-                  duration on the capture.
-                </span>
-              </span>
+              </button>
             </summary>
             <div className="mt-3 flex flex-col gap-3">
               <label className="flex cursor-pointer items-center gap-2 text-sm text-ink/85">
@@ -1118,25 +1427,22 @@ export default function App() {
             </div>
           </details>
 
-          <details className="rounded-lg border border-brand/20 bg-white/80 px-3 py-2 shadow-sm open:pb-3">
+          <details
+            className="rounded-lg border border-brand/20 bg-white/80 px-3 py-2 shadow-sm open:pb-3"
+            onToggle={() => setScheduleAccordionVersion((v) => v + 1)}
+          >
             <summary className="flex cursor-pointer list-none select-none items-center gap-2 text-sm font-medium text-ink [&::-webkit-details-marker]:hidden">
               <span className="flex-1">Overdue ping</span>
-              <span
-                className="group/help relative flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-brand/25 text-[0.65rem] font-semibold text-ink/60"
-                role="img"
+              <button
+                type="button"
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-brand/25 text-[0.65rem] font-semibold text-ink/60"
                 aria-label="Overdue ping help"
+                title="How often to ping after your planned finish time passed but you haven't marked the task done."
                 onClick={(e) => e.preventDefault()}
                 onKeyDown={(e) => e.stopPropagation()}
               >
                 ?
-                <span
-                  role="tooltip"
-                  className="pointer-events-none absolute right-0 top-full z-10 mt-1.5 hidden w-56 rounded-md border border-brand/25 bg-white px-2.5 py-2 text-xs font-normal leading-snug text-ink/80 shadow-lg group-hover/help:block group-focus-within/help:block"
-                >
-                  How often to ping after your planned finish time passed but you
-                  haven&apos;t marked the task done.
-                </span>
-              </span>
+              </button>
             </summary>
             <div className="mt-3 flex flex-col gap-3">
               <label className="flex cursor-pointer items-center gap-2 text-sm text-ink/85">
@@ -1206,6 +1512,313 @@ export default function App() {
               {overdueIntervalError ? (
                 <p className="text-sm font-medium text-red-600" role="status">
                   {overdueIntervalError}
+                </p>
+              ) : null}
+            </div>
+          </details>
+
+          <details
+            className="rounded-lg border border-brand/20 bg-white/80 px-3 py-2 shadow-sm open:pb-3"
+            onToggle={() => setScheduleAccordionVersion((v) => v + 1)}
+          >
+            <summary className="flex cursor-pointer list-none select-none items-center gap-2 text-sm font-medium text-ink [&::-webkit-details-marker]:hidden">
+              <span className="flex-1">Daily reminder ping</span>
+              <button
+                type="button"
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-brand/25 text-[0.65rem] font-semibold text-ink/60"
+                aria-label="Daily reminder help"
+                title="Gentle self-care nudges (water, food, meds, breaks). Separate from activity pings. Off by default."
+                onClick={(e) => e.preventDefault()}
+                onKeyDown={(e) => e.stopPropagation()}
+              >
+                ?
+              </button>
+            </summary>
+            <div className="mt-3 flex flex-col gap-3">
+              <label className="flex cursor-pointer items-center gap-2 text-sm text-ink/85">
+                <input
+                  type="checkbox"
+                  checked={dailyReminderEnabled}
+                  onChange={(e) =>
+                    void onToggleDailyReminderEnabled(e.target.checked)
+                  }
+                  disabled={dailyTogglingEnabled}
+                  className="h-4 w-4 rounded border-brand/30 text-brand focus:ring-brand"
+                />
+                Enabled
+              </label>
+              <p className="text-[0.65rem] leading-snug text-ink/45">
+                For hyperfocus days — basics like water, food, or medication.
+                Tap Done on a notification to stop further nudges for that
+                reminder only.
+              </p>
+
+              {dailyReminders.length > 0 ? (
+                <ul className="flex flex-col gap-2" aria-label="Daily reminders">
+                  {dailyReminders.map((r) => (
+                    <li
+                      key={r.id}
+                      className="flex flex-wrap items-center gap-2 rounded-md border border-brand/15 bg-brand/[0.03] px-2 py-1.5 text-xs"
+                    >
+                      <span className="font-medium text-ink/90">
+                        {r.label}
+                        {!r.enabled ? (
+                          <span className="ml-1 font-normal text-ink/45">
+                            (paused)
+                          </span>
+                        ) : null}
+                      </span>
+                      <span className="text-ink/50">
+                        {r.times.join(", ")}
+                        {r.burstCount > 1
+                          ? ` · nudge ${r.burstCount}×/${r.burstIntervalMin}m`
+                          : null}
+                      </span>
+                      <span className="ml-auto flex gap-1">
+                        <button
+                          type="button"
+                          onClick={() => startEditDailyReminder(r)}
+                          className="cursor-pointer rounded border border-brand/25 px-2 py-0.5 text-ink/80 hover:bg-brand/10"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void onDeleteDailyReminder(r.id)}
+                          className="cursor-pointer rounded border border-red-200 px-2 py-0.5 text-red-700 hover:bg-red-50"
+                        >
+                          Delete
+                        </button>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-xs text-ink/50">
+                  No reminders yet. Add one below.
+                </p>
+              )}
+
+              {dailyDraft ? (
+                <div className="flex flex-col gap-3 rounded-md border border-brand/20 bg-white/90 p-3">
+                  <p className="text-xs font-medium text-ink/70">
+                    {dailyDraft.id == null ? "New reminder" : "Edit reminder"}
+                  </p>
+                  <div className="flex flex-wrap gap-1.5" role="group" aria-label="Preset">
+                    {dailyPresets.map((p) => (
+                      <button
+                        key={p.key}
+                        type="button"
+                        onClick={() =>
+                          setDailyDraft((d) =>
+                            d ? { ...d, presetKey: p.key } : d,
+                          )
+                        }
+                        className={`cursor-pointer rounded-full border px-2 py-0.5 text-[0.7rem] transition-colors ${
+                          dailyDraft.presetKey === p.key
+                            ? "border-brand bg-brand/15 font-medium text-ink"
+                            : "border-brand/25 text-ink/70 hover:bg-brand/10"
+                        }`}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setDailyDraft((d) =>
+                          d ? { ...d, presetKey: "custom" } : d,
+                        )
+                      }
+                      className={`cursor-pointer rounded-full border px-2 py-0.5 text-[0.7rem] transition-colors ${
+                        dailyDraft.presetKey === "custom"
+                          ? "border-brand bg-brand/15 font-medium text-ink"
+                          : "border-brand/25 text-ink/70 hover:bg-brand/10"
+                      }`}
+                    >
+                      Custom
+                    </button>
+                  </div>
+                  {dailyDraft.presetKey === "custom" ? (
+                    <input
+                      type="text"
+                      value={dailyDraft.customLabel}
+                      onChange={(e) =>
+                        setDailyDraft((d) =>
+                          d ? { ...d, customLabel: e.target.value } : d,
+                        )
+                      }
+                      placeholder="Reminder text"
+                      className="rounded-md border border-brand/25 px-2 py-1.5 text-sm text-ink outline-none focus:border-brand focus:ring-2 focus:ring-brand/15"
+                    />
+                  ) : null}
+                  {dailyDraft.presetKey === "pills" ? (
+                    <input
+                      type="text"
+                      value={dailyDraft.pillNote}
+                      onChange={(e) =>
+                        setDailyDraft((d) =>
+                          d ? { ...d, pillNote: e.target.value } : d,
+                        )
+                      }
+                      placeholder="Medication name (optional)"
+                      className="rounded-md border border-brand/25 px-2 py-1.5 text-sm text-ink outline-none focus:border-brand focus:ring-2 focus:ring-brand/15"
+                    />
+                  ) : null}
+                  <div className="flex flex-col gap-2">
+                    <span className="text-xs font-medium text-ink/80">
+                      Times (local)
+                    </span>
+                    {dailyDraft.times.map((t, i) => (
+                      <div key={i} className="flex gap-2">
+                        <input
+                          type="time"
+                          value={t}
+                          onChange={(e) =>
+                            setDailyDraft((d) => {
+                              if (!d) return d;
+                              const times = [...d.times];
+                              times[i] = e.target.value;
+                              return { ...d, times };
+                            })
+                          }
+                          className="rounded-md border border-brand/25 px-2 py-1.5 text-sm text-ink"
+                        />
+                        {dailyDraft.times.length > 1 ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setDailyDraft((d) => {
+                                if (!d) return d;
+                                return {
+                                  ...d,
+                                  times: d.times.filter((_, j) => j !== i),
+                                };
+                              })
+                            }
+                            className="cursor-pointer text-xs text-ink/50 hover:text-red-600"
+                          >
+                            Remove
+                          </button>
+                        ) : null}
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setDailyDraft((d) =>
+                          d ? { ...d, times: [...d.times, "12:00"] } : d,
+                        )
+                      }
+                      className="self-start cursor-pointer text-xs font-medium text-brand hover:underline"
+                    >
+                      + Add time
+                    </button>
+                  </div>
+                  <fieldset className="flex flex-col gap-2 border-0 p-0">
+                    <legend className="text-xs font-medium text-ink/80">
+                      Nudge until done
+                    </legend>
+                    <p className="text-[0.65rem] leading-snug text-ink/45">
+                      Repeat this reminder a few times until you tap Done on the
+                      notification.
+                    </p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs text-ink/70">Count</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={10}
+                          value={dailyDraft.burstCount}
+                          onChange={(e) =>
+                            setDailyDraft((d) =>
+                              d
+                                ? {
+                                    ...d,
+                                    burstCount:
+                                      Number.parseInt(e.target.value, 10) ||
+                                      1,
+                                  }
+                                : d,
+                            )
+                          }
+                          className="rounded-md border border-brand/25 px-2 py-1.5 text-sm"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs text-ink/70">
+                          Every (min)
+                        </label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={60}
+                          value={dailyDraft.burstIntervalMin}
+                          onChange={(e) =>
+                            setDailyDraft((d) =>
+                              d
+                                ? {
+                                    ...d,
+                                    burstIntervalMin:
+                                      Number.parseInt(e.target.value, 10) ||
+                                      5,
+                                  }
+                                : d,
+                            )
+                          }
+                          className="rounded-md border border-brand/25 px-2 py-1.5 text-sm"
+                        />
+                      </div>
+                    </div>
+                  </fieldset>
+                  <label className="flex cursor-pointer items-center gap-2 text-sm text-ink/85">
+                    <input
+                      type="checkbox"
+                      checked={dailyDraft.enabled}
+                      onChange={(e) =>
+                        setDailyDraft((d) =>
+                          d ? { ...d, enabled: e.target.checked } : d,
+                        )
+                      }
+                      className="h-4 w-4 rounded border-brand/30 text-brand"
+                    />
+                    Reminder active
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      disabled={dailySaving}
+                      onClick={() => void onSaveDailyReminder()}
+                      className="cursor-pointer rounded-md border border-brand/30 bg-brand/10 px-3 py-1.5 text-sm font-medium text-ink hover:bg-brand/15 disabled:opacity-60"
+                    >
+                      {dailySaving ? "Saving…" : "Save reminder"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDailyDraft(null)}
+                      className="cursor-pointer rounded-md border border-brand/20 px-3 py-1.5 text-sm text-ink/70 hover:bg-brand/5"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  disabled={!dailyReminderEnabled}
+                  onClick={() => {
+                    setDailyDraft(emptyDailyDraft());
+                    setScheduleAccordionVersion((v) => v + 1);
+                  }}
+                  className="self-start cursor-pointer rounded-md border border-dashed border-brand/35 px-3 py-1.5 text-sm text-ink/80 hover:bg-brand/5 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  + Add reminder
+                </button>
+              )}
+              {dailyError ? (
+                <p className="text-sm font-medium text-red-600" role="status">
+                  {dailyError}
                 </p>
               ) : null}
             </div>
@@ -1293,6 +1906,104 @@ export default function App() {
                 ))}
               </ul>
             )}
+          </div>
+
+          <div className="flex flex-col gap-2 rounded-lg border border-brand/20 bg-white/90 p-3">
+            <p className="text-xs font-medium uppercase tracking-wide text-ink/55">
+              Export report
+            </p>
+            <p className="text-xs leading-snug text-ink/60">
+              Overall totals plus a chronological timeline for the selected
+              range. PDF opens the system print dialog (Save as PDF).
+            </p>
+            <div
+              className="flex flex-wrap gap-1.5"
+              role="group"
+              aria-label="Export date range"
+            >
+              {(
+                [
+                  ["today", "Today"],
+                  ["this_week", "This week"],
+                  ["last_7", "Last 7 days"],
+                  ["custom", "Custom"],
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  disabled={exporting}
+                  aria-pressed={exportPreset === id}
+                  onClick={() => setExportPreset(id)}
+                  className={`cursor-pointer rounded-full border px-2.5 py-1 text-xs font-medium transition-colors duration-interaction focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-50 ${
+                    exportPreset === id
+                      ? "border-brand bg-brand/15 text-ink"
+                      : "border-brand/25 bg-white text-ink/80 hover:border-brand/35"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {exportPreset === "custom" ? (
+              <div className="flex flex-wrap items-end gap-2">
+                <label className="flex flex-col gap-0.5 text-xs text-ink/70">
+                  From
+                  <input
+                    type="date"
+                    value={exportCustomStart}
+                    disabled={exporting}
+                    onChange={(e) => setExportCustomStart(e.target.value)}
+                    className="cursor-pointer rounded-md border border-brand/25 bg-white px-2 py-1 text-sm text-ink"
+                  />
+                </label>
+                <label className="flex flex-col gap-0.5 text-xs text-ink/70">
+                  To
+                  <input
+                    type="date"
+                    value={exportCustomEnd}
+                    disabled={exporting}
+                    onChange={(e) => setExportCustomEnd(e.target.value)}
+                    className="cursor-pointer rounded-md border border-brand/25 bg-white px-2 py-1 text-sm text-ink"
+                  />
+                </label>
+              </div>
+            ) : null}
+            <p className="text-[0.65rem] text-ink/50 tabular-nums">
+              {formatExportRangeLabel(
+                exportPreset,
+                exportCustomStart,
+                exportCustomEnd,
+              )}
+            </p>
+            <div
+              className="flex flex-wrap gap-2"
+              role="group"
+              aria-label="Export format"
+            >
+              {(
+                [
+                  ["csv", "CSV"],
+                  ["xlsx", "XLSX"],
+                  ["pdf", "PDF"],
+                ] as const
+              ).map(([fmt, label]) => (
+                <button
+                  key={fmt}
+                  type="button"
+                  disabled={exporting}
+                  onClick={() => void runHistoryExport(fmt)}
+                  className="cursor-pointer rounded-md border border-brand/30 bg-white px-3 py-1.5 text-xs font-medium text-ink/90 transition-colors duration-interaction hover:bg-brand/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {exporting ? "Exporting…" : label}
+                </button>
+              ))}
+            </div>
+            {exportStatus ? (
+              <p className="text-xs text-ink/65" role="status">
+                {exportStatus}
+              </p>
+            ) : null}
           </div>
 
           <div className="flex flex-col gap-2">

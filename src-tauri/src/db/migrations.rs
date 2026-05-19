@@ -8,6 +8,7 @@ pub fn apply_initial(conn: &Connection) -> rusqlite::Result<()> {
     migrate_captures_analytics(conn)?;
     migrate_captures_finished(conn)?;
     migrate_overdue_ping_settings(conn)?;
+    migrate_daily_reminders(conn)?;
     Ok(())
 }
 
@@ -108,6 +109,47 @@ fn migrate_captures_analytics(conn: &Connection) -> rusqlite::Result<()> {
         conn.execute("ALTER TABLE captures ADD COLUMN thread_root TEXT", [])?;
         conn.execute(
             "UPDATE captures SET thread_root = body WHERE thread_root IS NULL",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+/// Daily wellness reminders (separate from activity pings).
+fn migrate_daily_reminders(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS daily_reminders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            label TEXT NOT NULL,
+            times_json TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            burst_count INTEGER NOT NULL DEFAULT 3,
+            burst_interval_min INTEGER NOT NULL DEFAULT 5,
+            preset_key TEXT,
+            pill_note TEXT
+        );",
+    )?;
+    if !setting_exists(conn, "daily_reminder_enabled")? {
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('daily_reminder_enabled', '0')",
+            [],
+        )?;
+    }
+    if !scheduler_column_exists(conn, "daily_burst_reminder_id")? {
+        conn.execute(
+            "ALTER TABLE scheduler_state ADD COLUMN daily_burst_reminder_id INTEGER",
+            [],
+        )?;
+    }
+    if !scheduler_column_exists(conn, "daily_burst_remaining")? {
+        conn.execute(
+            "ALTER TABLE scheduler_state ADD COLUMN daily_burst_remaining INTEGER",
+            [],
+        )?;
+    }
+    if !scheduler_column_exists(conn, "daily_burst_next_at_unix")? {
+        conn.execute(
+            "ALTER TABLE scheduler_state ADD COLUMN daily_burst_next_at_unix INTEGER",
             [],
         )?;
     }
