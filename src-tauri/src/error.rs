@@ -9,6 +9,8 @@ pub enum AppError {
     EmptyCapture,
     #[error("no previous capture to repeat")]
     NoPriorCapture,
+    #[error("latest capture has no logged duration to shorten")]
+    NoAdjustableDuration,
     #[error("ping interval: {0}")]
     InvalidPingBounds(String),
     #[error("planned duration must be between 1 minute and one week")]

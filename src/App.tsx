@@ -33,6 +33,13 @@ type QuickPickRow = {
   count: number;
 };
 
+/** Emitted after −15 min shortens the last logged segment (`gap-fill-needed`). */
+type ShortenGapPrompt = {
+  adjustedEndUnix: number;
+  gapMinutes: number;
+  suggestedActivity: string;
+};
+
 const RECENT_CAPTURES_LIMIT = 15;
 
 /** Matches `repo::PING_MAX_MINUTES_CAP` (one week). */
@@ -48,6 +55,12 @@ function minutesMatchPreset(input: string, minutes: number): boolean {
   if (t === "") return false;
   const n = Number.parseInt(t, 10);
   return Number.isFinite(n) && n === minutes;
+}
+
+function formatPlannedPresetLabel(minutes: number): string {
+  if (minutes <= 30) return `${minutes} mins`;
+  const hours = minutes / 60;
+  return `${hours} hour${hours === 1 ? "" : "s"}`;
 }
 
 /** Empty field → null planned duration (random / backend default next ping). */
@@ -88,6 +101,21 @@ function formatNextPing(unix: number | null): string {
     dateStyle: "short",
     timeStyle: "medium",
   })}`;
+}
+
+function formatGapWindow(adjustedEndUnix: number, gapMinutes: number): string {
+  const from = new Date(adjustedEndUnix * 1000).toLocaleString(undefined, {
+    dateStyle: "short",
+    timeStyle: "short",
+  });
+  const to = new Date().toLocaleString(undefined, {
+    dateStyle: "short",
+    timeStyle: "short",
+  });
+  if (gapMinutes > 0) {
+    return `From ${from} until now (${to}) — about ${formatSegmentMinutes(gapMinutes)} to log.`;
+  }
+  return `From ${from} until now (${to}).`;
 }
 
 /** Matches `still_button_label` in `src-tauri/src/platform/windows.rs` (toast actions). */
@@ -139,9 +167,24 @@ export default function App() {
   const [digestPeriod, setDigestPeriod] = useState<DigestPeriod>("week");
   const [digest, setDigest] = useState<ActivityDigestRow[]>([]);
   const [digestCopied, setDigestCopied] = useState(false);
+  const [adjustingMinus, setAdjustingMinus] = useState(false);
+  const [adjustingPlus, setAdjustingPlus] = useState(false);
+  const [markingDone, setMarkingDone] = useState(false);
+  const [gapFillPrompt, setGapFillPrompt] = useState<ShortenGapPrompt | null>(
+    null,
+  );
+  const [gapActivity, setGapActivity] = useState("");
+  const [gapPlannedMinutes, setGapPlannedMinutes] = useState(
+    String(DEFAULT_PLANNED_MINUTES),
+  );
+  const [gapSaving, setGapSaving] = useState(false);
+  const gapActivityRef = useRef<HTMLTextAreaElement>(null);
 
   const latestCaptureBody = recentCaptures[0]?.body?.trim() ?? "";
   const canRepeatLast = latestCaptureBody.length > 0;
+  const canAdjustDuration = recentCaptures.some(
+    (r) => r.durationMinutes != null && r.durationMinutes > 0,
+  );
 
   const refreshRecentCaptures = useCallback(async () => {
     try {
@@ -226,6 +269,21 @@ export default function App() {
     wasAwaitingFollowupRef.current = awaitingFollowup;
   }, [awaitingFollowup]);
 
+  const openGapFillDialog = useCallback((prompt: ShortenGapPrompt) => {
+    setError(null);
+    setGapFillPrompt(prompt);
+    setGapActivity(prompt.suggestedActivity);
+    setGapPlannedMinutes(String(DEFAULT_PLANNED_MINUTES));
+    setMainTab("capture");
+    requestAnimationFrame(() => gapActivityRef.current?.focus());
+  }, []);
+
+  function closeGapFillDialog() {
+    setGapFillPrompt(null);
+    setGapActivity("");
+    setGapSaving(false);
+  }
+
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
@@ -249,9 +307,16 @@ export default function App() {
           void refreshSchedulerStatus();
           void refreshCaptureLists();
         });
+        const offGapFill = await listen<ShortenGapPrompt>(
+          "gap-fill-needed",
+          (event) => {
+            openGapFillDialog(event.payload);
+          },
+        );
         unlisten = () => {
           offPingDue();
           offScheduler();
+          offGapFill();
         };
       } catch {
         // `npm run dev` without Tauri — no event bridge.
@@ -262,7 +327,7 @@ export default function App() {
       cancelled = true;
       unlisten?.();
     };
-  }, [refreshSchedulerStatus, refreshCaptureLists]);
+  }, [refreshSchedulerStatus, refreshCaptureLists, openGapFillDialog]);
 
   async function onSnooze() {
     setSnoozing(true);
@@ -271,6 +336,92 @@ export default function App() {
       void refreshSchedulerStatus();
     } finally {
       setSnoozing(false);
+    }
+  }
+
+  async function onMinus15() {
+    setError(null);
+    setAdjustingMinus(true);
+    try {
+      const prompt = await invoke<ShortenGapPrompt>("shorten_last_capture_15");
+      openGapFillDialog(prompt);
+      void refreshSchedulerStatus();
+      void refreshCaptureLists();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setAdjustingMinus(false);
+    }
+  }
+
+  async function onPlus15() {
+    setError(null);
+    setAdjustingPlus(true);
+    try {
+      await invoke<SchedulerStatus>("extend_last_capture_15");
+      void refreshSchedulerStatus();
+      void refreshCaptureLists();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setAdjustingPlus(false);
+    }
+  }
+
+  async function onDone() {
+    setError(null);
+    setMarkingDone(true);
+    try {
+      await invoke<SchedulerStatus>("mark_task_done");
+      setText("");
+      setPlannedMinutes(String(DEFAULT_PLANNED_MINUTES));
+      void refreshSchedulerStatus();
+      void refreshCaptureLists();
+      requestAnimationFrame(() => textareaRef.current?.focus());
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setMarkingDone(false);
+    }
+  }
+
+  async function onSubmitGapFill(e: React.FormEvent) {
+    e.preventDefault();
+    if (!gapFillPrompt) return;
+    setError(null);
+    const trimmed = gapActivity.trim();
+    if (!trimmed) {
+      setError("Choose what you were doing in that window.");
+      return;
+    }
+    const rawMinutes = gapPlannedMinutes.trim();
+    let plannedDurationMinutes: number | null = null;
+    if (rawMinutes !== "") {
+      const n = Number.parseInt(rawMinutes, 10);
+      if (!Number.isFinite(n) || n < 1 || n > PING_MAX_MINUTES_CAP) {
+        setError(
+          `Minutes must be between 1 and ${PING_MAX_MINUTES_CAP.toLocaleString()}.`,
+        );
+        return;
+      }
+      plannedDurationMinutes = n;
+    }
+    setGapSaving(true);
+    try {
+      await invoke<SchedulerStatus>("submit_gap_after_shorten", {
+        input: {
+          text: trimmed,
+          gapMinutes: gapFillPrompt.gapMinutes,
+          plannedDurationMinutes,
+        },
+      });
+      closeGapFillDialog();
+      void refreshSchedulerStatus();
+      void refreshCaptureLists();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setGapSaving(false);
     }
   }
 
@@ -362,8 +513,10 @@ export default function App() {
     setSaving(true);
     try {
       await invoke("submit_capture", {
-        text: trimmed,
-        plannedDurationMinutes,
+        input: {
+          text: trimmed,
+          plannedDurationMinutes,
+        },
       });
       setText("");
       setPlannedMinutes(String(DEFAULT_PLANNED_MINUTES));
@@ -786,81 +939,146 @@ export default function App() {
             className="text-[0.65rem] leading-snug text-ink/45"
           >
             {awaitingFollowup
-              ? 'Presets or custom minutes; use “No idea” or leave empty for your random interval next.'
-              : `Presets below — “No idea” clears the plan (random next ping); default ${DEFAULT_PLANNED_MINUTES} min, or type 1–${PING_MAX_MINUTES_CAP.toLocaleString()}.`}
+              ? 'Use preset chips in the input card, or custom minutes here. “No idea” / blank keeps random next ping.'
+              : `Use preset chips in the input card or type custom 1–${PING_MAX_MINUTES_CAP.toLocaleString()} mins. “No idea” / blank keeps random next ping.`}
           </p>
-          <div
-            role="group"
-            aria-labelledby={plannedPresetsLegendId}
-            className="flex flex-wrap gap-2"
-          >
-            <button
-              type="button"
+          <div className="overflow-hidden rounded-md border border-brand/25 bg-white">
+            <input
+              id={plannedMinutesId}
+              type="number"
+              min={1}
+              max={PING_MAX_MINUTES_CAP}
+              inputMode="numeric"
+              value={plannedMinutes}
+              onChange={(e) => setPlannedMinutes(e.target.value)}
               disabled={saving || repeating}
-              title="No fixed duration — next ping uses random interval"
-              aria-label="No idea — clear planned minutes"
-              aria-pressed={isUnsetPlannedMinutes(plannedMinutes)}
-              onClick={() => setPlannedMinutes("")}
-              className={`cursor-pointer rounded-full border px-2.5 py-1 text-xs font-medium transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-60 ${
-                isUnsetPlannedMinutes(plannedMinutes)
-                  ? "border-brand bg-brand/15 text-ink"
-                  : "border-brand/25 bg-white/95 text-ink/90 hover:border-brand/40 hover:bg-brand/8"
-              }`}
+              placeholder={
+                awaitingFollowup
+                  ? `Blank → next ping in ${boundsMin}–${boundsMax} min`
+                  : "Custom minutes (or clear for random next ping)"
+              }
+              className="w-full border-0 bg-transparent px-2.5 py-2 text-sm text-ink outline-none ring-brand/15 transition-colors duration-200 placeholder:text-ink/38 focus:ring-2 disabled:cursor-not-allowed disabled:opacity-60"
+            />
+            <div
+              className="border-t border-brand/15 bg-brand/[0.03] px-2 pb-2 pt-1.5"
+              role="group"
+              aria-labelledby={plannedPresetsLegendId}
             >
-              No idea
-            </button>
-            {PLANNED_DURATION_PRESETS.map((m) => {
-              const active = minutesMatchPreset(plannedMinutes, m);
-              return (
+              <div className="flex flex-wrap gap-1.5">
                 <button
-                  key={m}
                   type="button"
                   disabled={saving || repeating}
-                  title={`${m} minutes`}
-                  aria-label={`Set planned duration to ${m} minutes`}
-                  aria-pressed={active}
-                  onClick={() => setPlannedMinutes(String(m))}
-                  className={`cursor-pointer rounded-full border px-2.5 py-1 text-xs font-medium tabular-nums transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-60 ${
-                    active
+                  title="No fixed duration — next ping uses random interval"
+                  aria-label="No idea — clear planned minutes"
+                  aria-pressed={isUnsetPlannedMinutes(plannedMinutes)}
+                  onClick={() => setPlannedMinutes("")}
+                  className={`cursor-pointer rounded-full border px-2 py-0.5 text-[0.7rem] font-medium transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-60 ${
+                    isUnsetPlannedMinutes(plannedMinutes)
                       ? "border-brand bg-brand/15 text-ink"
-                      : "border-brand/25 bg-white/95 text-ink/90 hover:border-brand/40 hover:bg-brand/8"
+                      : "border-brand/20 bg-white/90 text-ink/90 hover:border-brand/35 hover:bg-brand/8"
                   }`}
                 >
-                  {m}
+                  No idea
                 </button>
-              );
-            })}
+                {PLANNED_DURATION_PRESETS.map((m) => {
+                  const active = minutesMatchPreset(plannedMinutes, m);
+                  const label = formatPlannedPresetLabel(m);
+                  return (
+                    <button
+                      key={m}
+                      type="button"
+                      disabled={saving || repeating}
+                      title={`${label}`}
+                      aria-label={`Set planned duration to ${label}`}
+                      aria-pressed={active}
+                      onClick={() => setPlannedMinutes(String(m))}
+                      className={`cursor-pointer rounded-full border px-2 py-0.5 text-[0.7rem] font-medium tabular-nums transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-60 ${
+                        active
+                          ? "border-brand bg-brand/15 text-ink"
+                          : "border-brand/20 bg-white/90 text-ink/90 hover:border-brand/35 hover:bg-brand/8"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           </div>
-          <input
-            id={plannedMinutesId}
-            type="number"
-            min={1}
-            max={PING_MAX_MINUTES_CAP}
-            inputMode="numeric"
-            value={plannedMinutes}
-            onChange={(e) => setPlannedMinutes(e.target.value)}
-            disabled={saving || repeating}
-            placeholder={
-              awaitingFollowup
-                ? `Blank → next ping in ${boundsMin}–${boundsMax} min`
-                : "Custom minutes (or clear for random next ping)"
-            }
-            className="rounded-md border border-brand/25 bg-white px-2.5 py-2 text-sm text-ink outline-none ring-brand/15 transition-colors duration-200 placeholder:text-ink/38 focus:border-brand focus:ring-2 disabled:cursor-not-allowed disabled:opacity-60"
-          />
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="submit"
-            disabled={saving || repeating}
+            disabled={
+              saving ||
+              repeating ||
+              adjustingMinus ||
+              adjustingPlus ||
+              markingDone
+            }
             className="cursor-pointer rounded-lg bg-action px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors duration-interaction hover:bg-action-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-action motion-safe:active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
           >
             {saving ? "Saving…" : "Save"}
           </button>
           <button
             type="button"
+            onClick={() => void onMinus15()}
+            disabled={
+              saving ||
+              repeating ||
+              adjustingMinus ||
+              adjustingPlus ||
+              markingDone ||
+              !canAdjustDuration
+            }
+            title="End your last logged segment 15 minutes earlier, then log what happened since."
+            className="cursor-pointer rounded-lg border border-brand/35 bg-white/90 px-3 py-2.5 text-sm font-medium text-ink/90 shadow-sm transition-colors duration-interaction hover:bg-brand/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {adjustingMinus ? "…" : "−15 min"}
+          </button>
+          <button
+            type="button"
+            onClick={() => void onDone()}
+            disabled={
+              saving ||
+              repeating ||
+              adjustingMinus ||
+              adjustingPlus ||
+              markingDone
+            }
+            title="Mark your current timed task as finished and log what you do next."
+            className="cursor-pointer rounded-lg border border-brand/35 bg-white/90 px-3 py-2.5 text-sm font-medium text-ink/90 shadow-sm transition-colors duration-interaction hover:bg-brand/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {markingDone ? "…" : "Done"}
+          </button>
+          <button
+            type="button"
+            onClick={() => void onPlus15()}
+            disabled={
+              saving ||
+              repeating ||
+              adjustingMinus ||
+              adjustingPlus ||
+              markingDone ||
+              !canRepeatLast
+            }
+            title="Add 15 minutes to your last segment and postpone the next ping by 15 minutes."
+            className="cursor-pointer rounded-lg border border-brand/35 bg-white/90 px-3 py-2.5 text-sm font-medium text-ink/90 shadow-sm transition-colors duration-interaction hover:bg-brand/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {adjustingPlus ? "…" : "+15 min"}
+          </button>
+          <button
+            type="button"
             onClick={() => void onRepeatLast()}
-            disabled={saving || repeating || !canRepeatLast}
+            disabled={
+              saving ||
+              repeating ||
+              adjustingMinus ||
+              adjustingPlus ||
+              markingDone ||
+              !canRepeatLast
+            }
             title={
               canRepeatLast
                 ? "Log the same answer as your last save (no need to retype)."
@@ -883,6 +1101,162 @@ export default function App() {
           {error ?? ""}
         </div>
       </form>
+      ) : null}
+
+      {gapFillPrompt ? (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-ink/25 p-4 sm:items-center"
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !gapSaving) closeGapFillDialog();
+          }}
+        >
+          <form
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="gap-fill-title"
+            onSubmit={(e) => void onSubmitGapFill(e)}
+            className="flex max-h-[min(90vh,32rem)] w-full max-w-md flex-col gap-3 overflow-y-auto rounded-xl border border-brand/25 bg-white px-4 py-4 shadow-lg"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <header className="space-y-1">
+              <h2
+                id="gap-fill-title"
+                className="text-base font-semibold tracking-tight text-ink"
+              >
+                Log the time since you wrapped up early
+              </h2>
+              <p className="text-xs leading-snug text-ink/70">
+                {formatGapWindow(
+                  gapFillPrompt.adjustedEndUnix,
+                  gapFillPrompt.gapMinutes,
+                )}
+              </p>
+            </header>
+
+            <div className="flex flex-col gap-2">
+              <label
+                htmlFor="gap-activity"
+                className="text-sm font-medium text-ink"
+              >
+                What were you doing?
+              </label>
+              <div className="flex flex-col overflow-hidden rounded-lg border border-brand/25 bg-white shadow-sm ring-brand/20 focus-within:border-brand focus-within:ring-[3px]">
+                <textarea
+                  ref={gapActivityRef}
+                  id="gap-activity"
+                  value={gapActivity}
+                  onChange={(e) => setGapActivity(e.target.value)}
+                  rows={3}
+                  disabled={gapSaving}
+                  placeholder="Honest answer for this window…"
+                  className="w-full resize-y rounded-none border-0 bg-transparent px-3 py-2 text-sm text-ink outline-none placeholder:text-ink/40 disabled:opacity-60"
+                />
+                {quickPicks.length > 0 ? (
+                  <div className="border-t border-brand/15 bg-brand/[0.04] px-2 pb-2 pt-1.5">
+                    <p className="mb-1 text-[0.65rem] font-medium uppercase tracking-wide text-ink/45">
+                      Common answers
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {quickPicks.map((pick) => (
+                        <button
+                          key={`gap-${pick.body}`}
+                          type="button"
+                          disabled={gapSaving}
+                          title={pick.body}
+                          aria-label={`Use quick answer: ${pick.body}`}
+                          onClick={() => {
+                            setGapActivity(pick.body);
+                            requestAnimationFrame(() =>
+                              gapActivityRef.current?.focus(),
+                            );
+                          }}
+                          className="inline-flex max-w-full min-w-0 cursor-pointer items-center rounded-full border border-brand/20 bg-white/90 px-2 py-0.5 text-left text-[0.7rem] font-medium text-ink/90 shadow-sm transition-colors hover:border-brand/35 hover:bg-brand/8 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-60"
+                        >
+                          <span className="truncate">{pick.body}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <label
+                htmlFor="gap-planned-minutes"
+                className="text-xs font-medium text-ink/75"
+              >
+                Plan to keep at this for about (minutes)
+              </label>
+              <input
+                id="gap-planned-minutes"
+                type="number"
+                min={1}
+                max={PING_MAX_MINUTES_CAP}
+                inputMode="numeric"
+                value={gapPlannedMinutes}
+                onChange={(e) => setGapPlannedMinutes(e.target.value)}
+                disabled={gapSaving}
+                placeholder="Blank → random next ping"
+                className="rounded-md border border-brand/25 px-2.5 py-2 text-sm text-ink outline-none ring-brand/15 focus:border-brand focus:ring-2 disabled:opacity-60"
+              />
+              <div className="flex flex-wrap gap-1.5" role="group" aria-label="Planned duration presets">
+                <button
+                  type="button"
+                  disabled={gapSaving}
+                  aria-pressed={isUnsetPlannedMinutes(gapPlannedMinutes)}
+                  onClick={() => setGapPlannedMinutes("")}
+                  className={`cursor-pointer rounded-full border px-2 py-0.5 text-[0.7rem] font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-60 ${
+                    isUnsetPlannedMinutes(gapPlannedMinutes)
+                      ? "border-brand bg-brand/15 text-ink"
+                      : "border-brand/20 bg-white/90 text-ink/90 hover:border-brand/35"
+                  }`}
+                >
+                  No idea
+                </button>
+                {PLANNED_DURATION_PRESETS.map((m) => {
+                  const active = minutesMatchPreset(gapPlannedMinutes, m);
+                  const label = formatPlannedPresetLabel(m);
+                  return (
+                    <button
+                      key={`gap-preset-${m}`}
+                      type="button"
+                      disabled={gapSaving}
+                      aria-pressed={active}
+                      onClick={() => setGapPlannedMinutes(String(m))}
+                      className={`cursor-pointer rounded-full border px-2 py-0.5 text-[0.7rem] font-medium tabular-nums transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-60 ${
+                        active
+                          ? "border-brand bg-brand/15 text-ink"
+                          : "border-brand/20 bg-white/90 text-ink/90 hover:border-brand/35"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2 pt-1">
+              <button
+                type="submit"
+                disabled={gapSaving}
+                className="cursor-pointer rounded-lg bg-action px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-action-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-action disabled:opacity-60"
+              >
+                {gapSaving ? "Saving…" : "Save gap & plan"}
+              </button>
+              <button
+                type="button"
+                disabled={gapSaving}
+                onClick={closeGapFillDialog}
+                className="cursor-pointer rounded-lg border border-brand/30 bg-white px-4 py-2 text-sm font-medium text-ink/85 transition-colors hover:bg-brand/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-60"
+              >
+                Skip for now
+              </button>
+            </div>
+          </form>
+        </div>
       ) : null}
     </main>
   );

@@ -92,12 +92,56 @@ pub fn validate_planned_duration_minutes(m: i64) -> Result<(), AppError> {
     Ok(())
 }
 
+/// True when a planned-check ping is still scheduled in the future.
+pub fn has_future_planned_ping(conn: &Connection, now_unix: i64) -> rusqlite::Result<bool> {
+    if get_next_ping_kind(conn)? != NextPingKind::PlannedCheck {
+        return Ok(false);
+    }
+    Ok(get_next_ping_at_unix(conn)?
+        .map(|t| t > now_unix)
+        .unwrap_or(false))
+}
+
+/// Latest timed capture row that has not been explicitly marked done.
+pub fn has_unfinished_timed_capture(conn: &Connection) -> rusqlite::Result<bool> {
+    let exists: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM captures
+             WHERE duration_minutes IS NOT NULL AND COALESCE(finished, 0) = 0
+             ORDER BY created_at_unix DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(exists.is_some())
+}
+
+/// Random interval pings are allowed only with no active timed task and no pending follow-up.
+pub fn should_use_standard_schedule(
+    conn: &Connection,
+    now_unix: i64,
+) -> rusqlite::Result<bool> {
+    if get_awaiting_followup(conn)? {
+        return Ok(false);
+    }
+    if has_future_planned_ping(conn, now_unix)? {
+        return Ok(false);
+    }
+    if has_unfinished_timed_capture(conn)? {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
 /// Rolls the next ping using the user's random min/max interval and marks it **standard**.
 pub fn schedule_random_next_ping<R: Rng + ?Sized>(
     conn: &Connection,
     now_unix: i64,
     rng: &mut R,
 ) -> Result<(), AppError> {
+    if !should_use_standard_schedule(conn, now_unix)? {
+        return Ok(());
+    }
     let (min_m, max_m) = ping_min_max_minutes(conn)?;
     let next = ping_plan::next_ping_after(now_unix, min_m, max_m, rng);
     set_next_ping_at_unix(conn, next)?;
@@ -105,14 +149,34 @@ pub fn schedule_random_next_ping<R: Rng + ?Sized>(
     Ok(())
 }
 
-/// After a **planned_check** notification fires: wait for user reply + schedule the fallback random ping.
-pub fn apply_after_planned_check_ping<R: Rng + ?Sized>(
-    conn: &Connection,
-    now_unix: i64,
-    rng: &mut R,
-) -> Result<(), AppError> {
+/// After a **planned_check** notification fires: wait for user reply; do **not** schedule a random ping.
+pub fn apply_after_planned_check_ping(conn: &Connection) -> rusqlite::Result<()> {
     set_awaiting_followup(conn, true)?;
-    schedule_random_next_ping(conn, now_unix, rng)?;
+    conn.execute(
+        "UPDATE scheduler_state SET next_ping_at_unix = NULL WHERE id = 1",
+        [],
+    )?;
+    Ok(())
+}
+
+/// Marks the latest unfinished timed capture as explicitly completed and clears follow-up scheduling.
+pub fn mark_latest_timed_capture_finished(conn: &Connection) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE captures SET finished = 1
+         WHERE rowid = (
+           SELECT rowid FROM captures
+           WHERE duration_minutes IS NOT NULL AND COALESCE(finished, 0) = 0
+           ORDER BY created_at_unix DESC LIMIT 1
+         )",
+        [],
+    )?;
+    set_awaiting_followup(conn, false)?;
+    clear_planned_check_subject(conn)?;
+    set_next_ping_kind(conn, NextPingKind::Standard)?;
+    conn.execute(
+        "UPDATE scheduler_state SET next_ping_at_unix = NULL WHERE id = 1",
+        [],
+    )?;
     Ok(())
 }
 
@@ -157,27 +221,45 @@ pub fn ensure_next_ping_scheduled<R: Rng + ?Sized>(
     now_unix: i64,
     rng: &mut R,
 ) -> Result<i64, AppError> {
+    if get_awaiting_followup(conn)? {
+        return Ok(now_unix.saturating_add(AWAITING_IDLE_SLEEP_SECS));
+    }
+
     let (min_m, max_m) = ping_min_max_minutes(conn)?;
 
     match get_next_ping_at_unix(conn)? {
-        Some(t) if t > now_unix => {
-            let delta = t.saturating_sub(now_unix);
-            let cap = max_valid_delay_secs(max_m);
-            let kind = get_next_ping_kind(conn)?;
-            let preserve_far_future =
-                approx_snooze_delay_secs(delta) || kind == NextPingKind::PlannedCheck;
-            if delta > cap && !preserve_far_future {
+        Some(t) => {
+            if t > now_unix {
+                let delta = t.saturating_sub(now_unix);
+                let cap = max_valid_delay_secs(max_m);
+                let kind = get_next_ping_kind(conn)?;
+                let preserve_far_future =
+                    approx_snooze_delay_secs(delta) || kind == NextPingKind::PlannedCheck;
+                if delta > cap && !preserve_far_future {
+                    let next = ping_plan::next_ping_after(now_unix, min_m, max_m, rng);
+                    set_next_ping_at_unix(conn, next)?;
+                    Ok(next)
+                } else {
+                    Ok(t)
+                }
+            } else if get_next_ping_kind(conn)? == NextPingKind::PlannedCheck {
+                Ok(now_unix)
+            } else if should_use_standard_schedule(conn, now_unix)? {
                 let next = ping_plan::next_ping_after(now_unix, min_m, max_m, rng);
                 set_next_ping_at_unix(conn, next)?;
                 Ok(next)
             } else {
-                Ok(t)
+                Ok(now_unix.saturating_add(AWAITING_IDLE_SLEEP_SECS))
             }
         }
-        Some(_) | None => {
-            let next = ping_plan::next_ping_after(now_unix, min_m, max_m, rng);
-            set_next_ping_at_unix(conn, next)?;
-            Ok(next)
+        None => {
+            if should_use_standard_schedule(conn, now_unix)? {
+                let next = ping_plan::next_ping_after(now_unix, min_m, max_m, rng);
+                set_next_ping_at_unix(conn, next)?;
+                Ok(next)
+            } else {
+                Ok(now_unix.saturating_add(AWAITING_IDLE_SLEEP_SECS))
+            }
         }
     }
 }
@@ -201,6 +283,13 @@ pub const PING_MAX_MINUTES_CAP: i64 = 10_080;
 
 /// Fixed snooze delay (minutes). Next ping is set to `now + this many minutes`, persisted in `scheduler_state`.
 pub const SNOOZE_MINUTES: i64 = 10;
+
+/// When awaiting a reply after a planned-check ping, the scheduler sleeps in short polls instead of
+/// rolling a random interval (see `ensure_next_ping_scheduled`).
+const AWAITING_IDLE_SLEEP_SECS: i64 = 86_400;
+
+/// Toast quick-adjust step (minutes) for ending early / extending the last logged segment.
+pub const TOAST_ADJUST_MINUTES: i64 = 15;
 
 /// Pushes the next ping to **now + [SNOOZE_MINUTES]**, overwriting any earlier scheduled time.
 pub fn snooze_next_ping(conn: &Connection, now_unix: i64) -> rusqlite::Result<i64> {
@@ -261,6 +350,145 @@ pub fn latest_capture_body(conn: &Connection) -> rusqlite::Result<Option<String>
         |row| row.get::<_, String>(0),
     )
     .optional()
+}
+
+/// Latest capture row `(rowid, duration_minutes, body)` for toast duration tweaks.
+fn latest_capture_row(conn: &Connection) -> rusqlite::Result<Option<(i64, Option<i64>, String)>> {
+    conn.query_row(
+        "SELECT rowid, duration_minutes, body FROM captures
+         ORDER BY created_at_unix DESC LIMIT 1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )
+    .optional()
+}
+
+/// Latest row that still has a logged segment duration (skips blank-minute repeats).
+fn latest_capture_with_duration_row(
+    conn: &Connection,
+) -> rusqlite::Result<Option<(i64, i64, i64, String)>> {
+    conn.query_row(
+        "SELECT rowid, created_at_unix, duration_minutes, body FROM captures
+         WHERE duration_minutes IS NOT NULL
+         ORDER BY created_at_unix DESC LIMIT 1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )
+    .optional()
+}
+
+/// Gap window after shortening the last segment (for UI prompt).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShortenGapInfo {
+    pub adjusted_end_unix: i64,
+    pub gap_minutes: i64,
+    pub suggested_activity: String,
+}
+
+fn gap_minutes_after_adjusted_end(adjusted_end_unix: i64, now_unix: i64) -> i64 {
+    let gap_secs = now_unix.saturating_sub(adjusted_end_unix);
+    (gap_secs / 60).min(PING_MAX_MINUTES_CAP)
+}
+
+/// Shortens the latest capture's logged segment (action ended earlier than planned).
+pub fn shorten_last_capture_duration(
+    conn: &Connection,
+    now_unix: i64,
+    delta_minutes: i64,
+) -> Result<ShortenGapInfo, AppError> {
+    let Some((rowid, created_at, dur, body)) = latest_capture_with_duration_row(conn)? else {
+        return Err(AppError::NoAdjustableDuration);
+    };
+    let new_dur = (dur - delta_minutes).max(1);
+    conn.execute(
+        "UPDATE captures SET duration_minutes = ?1 WHERE rowid = ?2",
+        params![new_dur, rowid],
+    )?;
+    let adjusted_end = created_at.saturating_add(new_dur.saturating_mul(60));
+    let suggested = body.trim().to_string();
+    Ok(ShortenGapInfo {
+        adjusted_end_unix: adjusted_end,
+        gap_minutes: gap_minutes_after_adjusted_end(adjusted_end, now_unix),
+        suggested_activity: suggested,
+    })
+}
+
+/// Logs the gap since the shortened segment ended and schedules the next planned check.
+pub fn persist_gap_after_shorten<R: Rng + ?Sized>(
+    conn: &Connection,
+    text: &str,
+    now_unix: i64,
+    gap_minutes: i64,
+    planned_duration_minutes: Option<i64>,
+    rng: &mut R,
+) -> Result<(), AppError> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::EmptyCapture);
+    }
+    if gap_minutes > 0 {
+        validate_planned_duration_minutes(gap_minutes)?;
+        conn.execute(
+            "INSERT INTO captures (body, created_at_unix, duration_minutes, thread_root)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![trimmed, now_unix, gap_minutes, trimmed],
+        )?;
+    }
+    match planned_duration_minutes {
+        Some(d) => {
+            validate_planned_duration_minutes(d)?;
+            let next = now_unix.saturating_add(d.saturating_mul(60));
+            set_next_ping_at_unix(conn, next)?;
+            set_next_ping_kind(conn, NextPingKind::PlannedCheck)?;
+            set_planned_check_subject(conn, trimmed)?;
+            set_awaiting_followup(conn, false)?;
+        }
+        None => {
+            if should_use_standard_schedule(conn, now_unix)? {
+                schedule_random_next_ping(conn, now_unix, rng)?;
+                clear_planned_check_subject(conn)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Extends the latest capture's logged segment and schedules a planned check after `delay_minutes`.
+pub fn extend_last_capture_and_delay_ping(
+    conn: &Connection,
+    now_unix: i64,
+    delay_minutes: i64,
+) -> Result<i64, AppError> {
+    validate_planned_duration_minutes(delay_minutes)?;
+    let (rowid, new_dur, subject) =
+        if let Some((rowid, _, dur, body)) = latest_capture_with_duration_row(conn)? {
+            let trimmed = body.trim();
+            if trimmed.is_empty() {
+                return Err(AppError::NoPriorCapture);
+            }
+            let nd = dur.saturating_add(delay_minutes);
+            validate_planned_duration_minutes(nd)?;
+            (rowid, nd, trimmed.to_string())
+        } else if let Some((rowid, _, body)) = latest_capture_row(conn)? {
+            let trimmed = body.trim();
+            if trimmed.is_empty() {
+                return Err(AppError::NoPriorCapture);
+            }
+            (rowid, delay_minutes, trimmed.to_string())
+        } else {
+            return Err(AppError::NoPriorCapture);
+        };
+    conn.execute(
+        "UPDATE captures SET duration_minutes = ?1 WHERE rowid = ?2",
+        params![new_dur, rowid],
+    )?;
+    let next = now_unix.saturating_add(delay_minutes.saturating_mul(60));
+    set_next_ping_at_unix(conn, next)?;
+    set_next_ping_kind(conn, NextPingKind::PlannedCheck)?;
+    set_planned_check_subject(conn, &subject)?;
+    set_awaiting_followup(conn, false)?;
+    Ok(next)
 }
 
 /// Records another capture with the **same body** as the latest row (same timestamp semantics as [`persist_capture`]).
@@ -341,8 +569,10 @@ fn persist_capture_with_root<R: Rng + ?Sized>(
                 set_planned_check_subject(conn, trimmed)?;
             }
             None => {
-                schedule_random_next_ping(conn, now_unix, rng)?;
-                clear_planned_check_subject(conn)?;
+                if should_use_standard_schedule(conn, now_unix)? {
+                    schedule_random_next_ping(conn, now_unix, rng)?;
+                    clear_planned_check_subject(conn)?;
+                }
             }
         }
         return Ok(());
@@ -357,8 +587,10 @@ fn persist_capture_with_root<R: Rng + ?Sized>(
             set_planned_check_subject(conn, trimmed)?;
         }
         None => {
-            schedule_random_next_ping(conn, now_unix, rng)?;
-            clear_planned_check_subject(conn)?;
+            if should_use_standard_schedule(conn, now_unix)? {
+                schedule_random_next_ping(conn, now_unix, rng)?;
+                clear_planned_check_subject(conn)?;
+            }
         }
     }
     Ok(())
@@ -729,5 +961,135 @@ mod tests {
         assert!(next > 1000);
         assert!(next <= 1000 + 20 * 60 + 2);
         assert!(next >= 1000 + 10 * 60 - 2);
+    }
+
+    #[test]
+    fn shorten_last_capture_duration_reduces_latest_segment() {
+        let conn = open_memory().expect("db");
+        let mut rng = StdRng::seed_from_u64(77);
+        persist_capture(&conn, "work", 1000, &mut rng, Some(30)).expect("save");
+        let info = shorten_last_capture_duration(&conn, 5000, TOAST_ADJUST_MINUTES)
+            .expect("shorten");
+        let rows = query_recent_captures(&conn, 1).expect("list");
+        assert_eq!(rows[0].2, Some(15));
+        assert_eq!(info.gap_minutes, (5000 - (1000 + 15 * 60)) / 60);
+    }
+
+    #[test]
+    fn shorten_last_capture_duration_floors_at_one_minute() {
+        let conn = open_memory().expect("db");
+        let mut rng = StdRng::seed_from_u64(78);
+        persist_capture(&conn, "work", 1000, &mut rng, Some(10)).expect("save");
+        shorten_last_capture_duration(&conn, 5000, TOAST_ADJUST_MINUTES).expect("shorten");
+        let rows = query_recent_captures(&conn, 1).expect("list");
+        assert_eq!(rows[0].2, Some(1));
+    }
+
+    #[test]
+    fn shorten_last_capture_duration_err_without_duration() {
+        let conn = open_memory().expect("db");
+        let mut rng = StdRng::seed_from_u64(79);
+        persist_capture(&conn, "work", 1000, &mut rng, None).expect("save");
+        let err =
+            shorten_last_capture_duration(&conn, 5000, TOAST_ADJUST_MINUTES).unwrap_err();
+        assert!(matches!(err, AppError::NoAdjustableDuration));
+    }
+
+    #[test]
+    fn shorten_last_capture_duration_targets_latest_row_with_minutes() {
+        let conn = open_memory().expect("db");
+        let mut rng = StdRng::seed_from_u64(81);
+        persist_capture(&conn, "work", 1000, &mut rng, Some(30)).expect("first");
+        persist_repeat_latest(&conn, 1100, &mut rng).expect("repeat");
+        shorten_last_capture_duration(&conn, 5000, TOAST_ADJUST_MINUTES).expect("shorten");
+        let rows = query_recent_captures(&conn, 2).expect("list");
+        assert_eq!(rows[0].2, None);
+        assert_eq!(rows[1].2, Some(15));
+    }
+
+    #[test]
+    fn persist_gap_after_shorten_logs_gap_and_planned_check() {
+        let conn = open_memory().expect("db");
+        let mut rng = StdRng::seed_from_u64(82);
+        let created = 1_000_i64;
+        let now = created + 90 * 60;
+        persist_capture(&conn, "reading", created, &mut rng, Some(60)).expect("save");
+        shorten_last_capture_duration(&conn, now, TOAST_ADJUST_MINUTES).expect("shorten");
+        persist_gap_after_shorten(&conn, "email", now, 30, Some(20), &mut rng).expect("gap");
+        let list = query_recent_captures(&conn, 5).expect("list");
+        assert_eq!(list[0].0, "email");
+        assert_eq!(list[0].2, Some(30));
+        assert_eq!(get_next_ping_kind(&conn).unwrap(), NextPingKind::PlannedCheck);
+        assert_eq!(
+            get_planned_check_subject(&conn).unwrap().as_deref(),
+            Some("email")
+        );
+        let next = get_next_ping_at_unix(&conn).unwrap().unwrap();
+        assert_eq!(next, now + 20 * 60);
+    }
+
+    #[test]
+    fn apply_after_planned_check_does_not_schedule_random_ping() {
+        let conn = open_memory().expect("db");
+        set_ping_min_max_minutes(&conn, 1, 1).expect("bounds");
+        let mut rng = StdRng::seed_from_u64(88);
+        let now = 3_000_000_i64;
+        persist_capture(&conn, "focus", now, &mut rng, Some(30)).expect("save");
+        let planned = get_next_ping_at_unix(&conn).unwrap().unwrap();
+        set_next_ping_at_unix(&conn, planned).expect("set");
+        apply_after_planned_check_ping(&conn).expect("after");
+        assert!(get_awaiting_followup(&conn).unwrap());
+        assert_eq!(get_next_ping_at_unix(&conn).unwrap(), None);
+        assert_eq!(get_next_ping_kind(&conn).unwrap(), NextPingKind::PlannedCheck);
+        let mut rng2 = StdRng::seed_from_u64(89);
+        let next = ensure_next_ping_scheduled(&conn, now + 5, &mut rng2).expect("ensure");
+        assert!(next > now + 3600);
+    }
+
+    #[test]
+    fn mark_latest_timed_capture_finished_allows_standard_schedule() {
+        let conn = open_memory().expect("db");
+        set_ping_min_max_minutes(&conn, 5, 10).expect("bounds");
+        let mut rng = StdRng::seed_from_u64(90);
+        let now = 4_000_000_i64;
+        persist_capture(&conn, "task", now, &mut rng, Some(20)).expect("save");
+        mark_latest_timed_capture_finished(&conn).expect("done");
+        assert!(!has_unfinished_timed_capture(&conn).unwrap());
+        assert!(should_use_standard_schedule(&conn, now).unwrap());
+        let next = ensure_next_ping_scheduled(&conn, now, &mut rng).expect("roll");
+        assert!(next > now);
+        assert!(next <= now + 10 * 60 + 2);
+    }
+
+    #[test]
+    fn timed_capture_blocks_random_until_finished() {
+        let conn = open_memory().expect("db");
+        set_ping_min_max_minutes(&conn, 1, 1).expect("bounds");
+        let mut rng = StdRng::seed_from_u64(91);
+        let now = 5_000_000_i64;
+        persist_capture(&conn, "work", now, &mut rng, Some(45)).expect("save");
+        assert!(!should_use_standard_schedule(&conn, now).unwrap());
+        schedule_random_next_ping(&conn, now, &mut rng).expect("noop");
+        assert_eq!(get_next_ping_kind(&conn).unwrap(), NextPingKind::PlannedCheck);
+    }
+
+    #[test]
+    fn extend_last_capture_and_delay_ping_adds_minutes_and_schedules() {
+        let conn = open_memory().expect("db");
+        let mut rng = StdRng::seed_from_u64(80);
+        let now = 2_000_000_i64;
+        persist_capture(&conn, "reading", now - 3600, &mut rng, Some(30)).expect("save");
+        set_awaiting_followup(&conn, true).expect("follow");
+        let next =
+            extend_last_capture_and_delay_ping(&conn, now, TOAST_ADJUST_MINUTES).expect("extend");
+        assert_eq!(next, now + TOAST_ADJUST_MINUTES * 60);
+        assert_eq!(get_next_ping_kind(&conn).unwrap(), NextPingKind::PlannedCheck);
+        assert!(!get_awaiting_followup(&conn).unwrap());
+        assert_eq!(
+            get_planned_check_subject(&conn).unwrap().as_deref(),
+            Some("reading")
+        );
+        let rows = query_recent_captures(&conn, 1).expect("list");
+        assert_eq!(rows[0].2, Some(45));
     }
 }

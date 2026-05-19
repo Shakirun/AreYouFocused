@@ -10,6 +10,9 @@ use tauri_winrt_notification::{Duration, Toast};
 /// Toast button `arguments`; must match `add_button` second parameter.
 const TOAST_ACTION_STILL: &str = "still";
 const TOAST_ACTION_SNOOZE: &str = "snooze";
+const TOAST_ACTION_MINUS_15: &str = "minus_15";
+const TOAST_ACTION_DONE: &str = "done";
+const TOAST_ACTION_PLUS_15: &str = "plus_15";
 
 /// Windows toast action labels are short; keep total length modest.
 fn still_button_label(body: &str) -> String {
@@ -53,6 +56,36 @@ fn still_from_toast(app: &AppHandle) -> Result<(), AppError> {
     let conn = &mut *db;
     repo::persist_repeat_latest(conn, unix_now(), &mut rand::thread_rng())?;
     let _ = app.emit("scheduler-updated", ());
+    Ok(())
+}
+
+fn minus_15_from_toast(app: &AppHandle) -> Result<(), AppError> {
+    let state = app.state::<AppState>();
+    let mut db = state.db.lock().unwrap_or_else(|p| p.into_inner());
+    let conn = &mut *db;
+    let info = repo::shorten_last_capture_duration(conn, unix_now(), repo::TOAST_ADJUST_MINUTES)?;
+    let _ = app.emit("gap-fill-needed", &info);
+    let _ = app.emit("scheduler-updated", ());
+    window_util::show_and_focus_capture(app);
+    Ok(())
+}
+
+fn plus_15_from_toast(app: &AppHandle) -> Result<(), AppError> {
+    let state = app.state::<AppState>();
+    let mut db = state.db.lock().unwrap_or_else(|p| p.into_inner());
+    let conn = &mut *db;
+    repo::extend_last_capture_and_delay_ping(conn, unix_now(), repo::TOAST_ADJUST_MINUTES)?;
+    let _ = app.emit("scheduler-updated", ());
+    Ok(())
+}
+
+fn done_from_toast(app: &AppHandle) -> Result<(), AppError> {
+    let state = app.state::<AppState>();
+    let mut db = state.db.lock().unwrap_or_else(|p| p.into_inner());
+    let conn = &mut *db;
+    repo::mark_latest_timed_capture_finished(conn)?;
+    let _ = app.emit("scheduler-updated", ());
+    window_util::show_and_focus_capture(app);
     Ok(())
 }
 
@@ -117,12 +150,16 @@ impl PingNotifier for WindowsNotifier {
             .text2(&toast_secondary)
             .duration(Duration::Short);
 
+        toast_builder = toast_builder.add_button("Snooze 10 min", TOAST_ACTION_SNOOZE);
+        toast_builder =
+            toast_builder.add_button("−15 min", TOAST_ACTION_MINUS_15);
+        toast_builder = toast_builder.add_button("Done", TOAST_ACTION_DONE);
+        toast_builder = toast_builder.add_button("+15 min", TOAST_ACTION_PLUS_15);
         if let Some(ref label) = latest_label {
             toast_builder = toast_builder.add_button(label, TOAST_ACTION_STILL);
         }
 
         toast_builder
-            .add_button("Snooze 10 min", TOAST_ACTION_SNOOZE)
             .on_activated(move |action| {
                 let app = app_for_activation.clone();
                 match action.as_deref() {
@@ -141,6 +178,36 @@ impl PingNotifier for WindowsNotifier {
                         if let Err(e) = app.run_on_main_thread(move || {
                             if let Err(e) = snooze_from_toast(&app_run) {
                                 tracing::warn!("toast snooze: {e}");
+                            }
+                        }) {
+                            tracing::warn!("toast activation: run_on_main_thread failed: {e}");
+                        }
+                    }
+                    Some(TOAST_ACTION_MINUS_15) => {
+                        let app_run = app.clone();
+                        if let Err(e) = app.run_on_main_thread(move || {
+                            if let Err(e) = minus_15_from_toast(&app_run) {
+                                tracing::warn!("toast minus_15: {e}");
+                            }
+                        }) {
+                            tracing::warn!("toast activation: run_on_main_thread failed: {e}");
+                        }
+                    }
+                    Some(TOAST_ACTION_DONE) => {
+                        let app_run = app.clone();
+                        if let Err(e) = app.run_on_main_thread(move || {
+                            if let Err(e) = done_from_toast(&app_run) {
+                                tracing::warn!("toast done: {e}");
+                            }
+                        }) {
+                            tracing::warn!("toast activation: run_on_main_thread failed: {e}");
+                        }
+                    }
+                    Some(TOAST_ACTION_PLUS_15) => {
+                        let app_run = app.clone();
+                        if let Err(e) = app.run_on_main_thread(move || {
+                            if let Err(e) = plus_15_from_toast(&app_run) {
+                                tracing::warn!("toast plus_15: {e}");
                             }
                         }) {
                             tracing::warn!("toast activation: run_on_main_thread failed: {e}");
