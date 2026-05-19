@@ -319,12 +319,97 @@ Connect a phone with USB debugging or start an AVD in Android Studio.
 
 ```powershell
 npm run build
-npm run tauri:android:build -- --apk
+npm run tauri:android:build:apk
 ```
+
+Equivalent: `npm run tauri:android:build -- --apk`.
 
 For Google Play (AAB only): `npm run tauri:android:build` (no `--apk`).
 
 Artifacts are under `src-tauri/gen/android/app/build/outputs/`.
+
+**Without a release keystore**, Gradle produces `app-universal-release-unsigned.apk`. That file is **not installable** on a phone (see [Install on phone](#install-on-phone-signed-vs-unsigned-apk)).
+
+## Install on phone (signed vs unsigned APK)
+
+### Why `app-universal-release-unsigned.apk` is “invalid”
+
+Android requires every installable APK/AAB to be **signed** with a certificate. Since Android 7 (API 24), sideloaded packages must be signed; unsigned release outputs fail with errors such as:
+
+- **“App not installed”** / **“Invalid package”** when tapping the file in Files
+- `adb install`: `INSTALL_PARSE_FAILED_NO_CERTIFICATES` or `Failure [INSTALL_PARSE_FAILED_NO_CERTIFICATES]`
+
+`npm run tauri:android:build:apk` (release, no `keystore.properties`) intentionally builds an **unsigned** artifact for CI or manual signing before Play Store upload. It is not meant for direct phone install.
+
+Tauri does **not** put Android keystore paths in `tauri.conf.json` / `tauri.android.conf.json`. Signing is configured in **Gradle** under `src-tauri/gen/android/` ([official docs](https://v2.tauri.app/distribute/sign/android/)).
+
+### Recommended: debug APK (auto debug-signed)
+
+For day-to-day testing on a physical device:
+
+```powershell
+npm run build
+npm run tauri:android:build:debug
+```
+
+This runs `tauri android build -- --apk --debug`. Gradle signs with the standard **debug keystore** (`%USERPROFILE%\.android\debug.keystore`, passwords `android` / alias `androiddebugkey`), created on first Android Studio or debug build.
+
+**Output (typical):**
+
+`src-tauri\gen\android\app\build\outputs\apk\universal\debug\app-universal-debug.apk`
+
+### Install with `adb` (USB debugging)
+
+1. On the phone: **Settings → Developer options → USB debugging** (on).
+2. Connect USB; accept the RSA prompt on the phone.
+3. Verify device:
+
+```powershell
+adb devices
+```
+
+4. Install (replace path if yours differs):
+
+```powershell
+adb install -r "src-tauri\gen\android\app\build\outputs\apk\universal\debug\app-universal-debug.apk"
+```
+
+`-r` replaces an existing install with the same `applicationId` (`dev.areyoufocused.app`).
+
+**`adb install` vs copying the APK manually:** Both need a **signed** APK. `adb` shows explicit errors (`INSTALL_*`); the system UI often only says “invalid” or “not installed”. Unsigned release APKs fail either way.
+
+### Alternative: `tauri android dev` (build + deploy)
+
+```powershell
+npm run tauri:android:dev
+```
+
+With USB debugging enabled, the CLI builds a debug build and installs/launches on the connected device (no manual APK copy).
+
+### Already built unsigned release? Sign with debug keystore (local only)
+
+Not for production or Play Store — only to test a release-shaped APK without rebuilding:
+
+```powershell
+.\scripts\sign-android-apk-debug.ps1
+adb install -r "src-tauri\gen\android\app\build\outputs\apk\universal\release\app-universal-release-unsigned-signed-debug.apk"
+```
+
+Manual signing (same debug keystore), if you prefer:
+
+```powershell
+$bt = (Get-ChildItem "$env:ANDROID_HOME\build-tools" | Sort-Object Name -Descending | Select-Object -First 1).FullName
+& "$bt\apksigner.bat" sign --ks "$env:USERPROFILE\.android\debug.keystore" --ks-pass pass:android --key-pass pass:android --ks-key-alias androiddebugkey --out signed.apk "src-tauri\gen\android\app\build\outputs\apk\universal\release\app-universal-release-unsigned.apk"
+```
+
+(`jarsigner` can sign APKs but **apksigner** is required for modern APK Signature Scheme v2/v3 — use `apksigner` from SDK build-tools.)
+
+### Release APK signed for Play Store / real installs
+
+1. Create a keystore ([Tauri Android signing](https://v2.tauri.app/distribute/sign/android/)).
+2. Copy `src-tauri/android/keystore.properties.example` → `src-tauri/gen/android/keystore.properties` and fill in paths/passwords.
+3. Run once: `.\scripts\patch-android-release-signing.ps1` (patches `gen/android/app/build.gradle.kts`; re-run after `tauri android init` if Gradle was regenerated).
+4. `npm run tauri:android:build:apk` — when `keystore.properties` exists, the release APK is signed (no `-unsigned` suffix).
 
 ## MVP limitations on Android
 
@@ -344,3 +429,4 @@ Windows desktop build is unchanged: `npm run tauri:build`.
 | Build still fails after disabling SAC | Stale blocked artifacts | `cd src-tauri; cargo clean; cd ..` then rebuild |
 | `Java not found` / SDK not found | `JAVA_HOME` / `ANDROID_HOME` | [Verify environment](#5-verify-environment), `.\scripts\setup-android-env.ps1` |
 | Slow Rust compiles, Defender warnings | Antivirus scanning `target\` | Defender exclusions in [BUILD-WINDOWS.md](BUILD-WINDOWS.md) (does **not** replace disabling SAC) |
+| “Invalid package” / App not installed / `INSTALL_PARSE_FAILED_NO_CERTIFICATES` | Unsigned release APK | [Install on phone](#install-on-phone-signed-vs-unsigned-apk) — use `npm run tauri:android:build:debug` or sign release APK |

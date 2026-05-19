@@ -12,7 +12,9 @@
     "tauri:build": "tauri build",
     "tauri:android:init": "tauri android init",
     "tauri:android:dev": "tauri android dev",
-    "tauri:android:build": "tauri android build"
+    "tauri:android:build": "tauri android build",
+    "tauri:android:build:apk": "tauri android build -- --apk",
+    "tauri:android:build:debug": "tauri android build -- --apk --debug"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.2.0",
