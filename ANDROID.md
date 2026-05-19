@@ -73,6 +73,71 @@ If `tauri android init` reports **SDK not found** or you answered **no** when as
 
 **Empty SDK folder:** If `%LOCALAPPDATA%\Android\Sdk` exists but has no `platform-tools`, `build-tools`, or `platforms` subfolders, Android Studio has not installed components yet — complete steps 1–7 above before running Tauri.
 
+#### `sdkmanager` not found / wrong path (Windows)
+
+Gradle, Tauri, and many scripts expect:
+
+```text
+%LOCALAPPDATA%\Android\Sdk\cmdline-tools\latest\bin\sdkmanager.bat
+```
+
+On some machines **Command-line Tools are installed but under a different layout** (manual ZIP extract, older Tauri download, or Studio placing files without a `latest` folder). Typical alternate path:
+
+```text
+%LOCALAPPDATA%\Android\Sdk\cmdline-tools\bin\sdkmanager.bat
+```
+
+**Find `sdkmanager` on your PC (copy-paste in PowerShell):**
+
+```powershell
+Get-ChildItem "$env:LOCALAPPDATA\Android\Sdk" -Recurse -Filter sdkmanager.bat -ErrorAction SilentlyContinue
+```
+
+If the command prints a path, use that full path (or add its `bin` folder to `PATH` for the session):
+
+```powershell
+$sdkmanager = (Get-ChildItem "$env:LOCALAPPDATA\Android\Sdk" -Recurse -Filter sdkmanager.bat -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+& $sdkmanager --list
+```
+
+**Install or fix Command-line Tools in Android Studio** (when search returns nothing, or you want the standard `latest` layout):
+
+1. Open **Android Studio**.
+2. **File → Settings** (Windows) or **Android Studio → Settings** (macOS).
+3. **Languages & Frameworks → Android SDK**.
+4. Open the **SDK Tools** tab.
+5. Enable **Android SDK Command-line Tools (latest)** (exact checkbox label in current Studio).
+6. **Apply → OK** and wait for the download.
+
+After Studio installs them, `sdkmanager` is usually at:
+
+```text
+%LOCALAPPDATA%\Android\Sdk\cmdline-tools\latest\bin\sdkmanager.bat
+```
+
+**Alternative (no `sdkmanager` in terminal):** install everything from Studio and accept licenses there — you do **not** need `sdkmanager` on `PATH` if Studio manages the SDK:
+
+1. Same path: **Settings → Languages & Frameworks → Android SDK**.
+2. **SDK Platforms** tab: install **Android 16 / API 36** (or the API level your project targets).
+3. **SDK Tools** tab: install **Android SDK Build-Tools 35** (or newer), **Platform-Tools**, **NDK (Side by side)**.
+4. Click **Apply**; Studio downloads packages and accepts SDK licenses in the UI.
+
+Then verify folders exist (PowerShell):
+
+```powershell
+Test-Path "$env:ANDROID_HOME\platform-tools\adb.exe"
+Get-ChildItem "$env:ANDROID_HOME\build-tools" -ErrorAction SilentlyContinue
+Get-ChildItem "$env:ANDROID_HOME\platforms" -ErrorAction SilentlyContinue
+```
+
+| SDK folder | Required for Tauri Android | Typical symptom if missing |
+|------------|----------------------------|----------------------------|
+| `platform-tools` | Yes (`adb`) | `adb` not found |
+| `build-tools` | Yes | Gradle / `aapt` errors |
+| `platforms` | Yes | Missing `android.jar` for compile SDK |
+| `ndk` | Yes | NDK / `clang` errors |
+| `cmdline-tools\latest\bin` | Optional if Studio installed the rest | Scripts looking for `sdkmanager.bat` fail |
+
 #### Alternative: let Tauri install cmdline-tools
 
 When `npm run tauri:android:init` prompts to install Android command-line tools, answering **yes** can download **cmdline-tools** into your SDK automatically. You still need **Platform**, **Build-Tools**, **NDK**, and **Platform-Tools** from SDK Manager (or `sdkmanager` after cmdline-tools exist). Studio-first setup is usually easier on a fresh Windows machine.
