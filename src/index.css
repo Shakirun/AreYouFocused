@@ -17,12 +17,18 @@
 }
 
 @layer base {
-  /* Let document height follow content so Tauri can measure `scrollHeight` for fit-to-window. */
+  details:not([open]) {
+    overflow: hidden;
+  }
+
+  /* Let document height follow content so Tauri can measure fit-to-window. */
   html,
   body,
   #root {
     min-height: 0;
     overflow-x: hidden;
+    /* Window height is driven by Tauri fit-to-content; avoid page scrollbars. */
+    overflow-y: hidden;
   }
 
   @media (prefers-reduced-motion: reduce) {

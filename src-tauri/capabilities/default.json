@@ -2,6 +2,11 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default capability for dev",
-  "windows": ["capture"],
-  "permissions": ["core:default", "core:window:allow-set-size", "dialog:default"]
+  "windows": ["capture", "history-report"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-size",
+    "core:webview:allow-print",
+    "dialog:default"
+  ]
 }
