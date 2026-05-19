@@ -1,6 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 
+import {
+  DAILY_REMINDER_TIME_PRESETS,
+  SLEEP_END_PRESETS,
+  SLEEP_START_PRESETS,
+  TimePickerField,
+} from "./TimePickerField";
 import { useFitWindowHeight } from "./useFitWindowHeight";
 
 type SchedulerStatus = {
@@ -63,6 +69,12 @@ type DailyReminderSettings = {
 type DailyReminderPreset = {
   key: string;
   label: string;
+};
+
+type SleepHoursSettings = {
+  enabled: boolean;
+  startHm: string;
+  endHm: string;
 };
 
 type DailyReminderDraft = {
@@ -387,6 +399,11 @@ export default function App() {
   const [dailyError, setDailyError] = useState<string | null>(null);
   const [dailySaving, setDailySaving] = useState(false);
   const [dailyTogglingEnabled, setDailyTogglingEnabled] = useState(false);
+  const [sleepEnabled, setSleepEnabled] = useState(false);
+  const [sleepStartHm, setSleepStartHm] = useState("22:00");
+  const [sleepEndHm, setSleepEndHm] = useState("08:00");
+  const [sleepError, setSleepError] = useState<string | null>(null);
+  const [applyingSleep, setApplyingSleep] = useState(false);
   const [snoozing, setSnoozing] = useState(false);
   const [repeating, setRepeating] = useState(false);
   const [recentCaptures, setRecentCaptures] = useState<CaptureRow[]>([]);
@@ -522,10 +539,24 @@ export default function App() {
     void refreshCaptureLists();
   }, [refreshSchedulerStatus, refreshCaptureLists]);
 
+  const refreshSleepHours = useCallback(async () => {
+    try {
+      const s = await invoke<SleepHoursSettings>("get_sleep_hours_settings");
+      setSleepEnabled(s.enabled);
+      setSleepStartHm(s.startHm);
+      setSleepEndHm(s.endHm);
+    } catch {
+      setSleepEnabled(false);
+      setSleepStartHm("22:00");
+      setSleepEndHm("08:00");
+    }
+  }, []);
+
   useEffect(() => {
     if (mainTab !== "schedule") return;
     void refreshDailyReminders();
-  }, [mainTab, refreshDailyReminders]);
+    void refreshSleepHours();
+  }, [mainTab, refreshDailyReminders, refreshSleepHours]);
 
   useEffect(() => {
     if (mainTab !== "history") return;
@@ -889,6 +920,28 @@ export default function App() {
       if (dailyDraft?.id === id) setDailyDraft(null);
     } catch (err) {
       setDailyError(String(err));
+    }
+  }
+
+  async function onApplySleepHours() {
+    setSleepError(null);
+    setApplyingSleep(true);
+    try {
+      const settings = await invoke<SleepHoursSettings>("save_sleep_hours_settings", {
+        input: {
+          enabled: sleepEnabled,
+          startHm: sleepStartHm,
+          endHm: sleepEndHm,
+        },
+      });
+      setSleepEnabled(settings.enabled);
+      setSleepStartHm(settings.startHm);
+      setSleepEndHm(settings.endHm);
+      await refreshSchedulerStatus();
+    } catch (err) {
+      setSleepError(String(err));
+    } finally {
+      setApplyingSleep(false);
     }
   }
 
@@ -1522,6 +1575,82 @@ export default function App() {
             onToggle={() => setScheduleAccordionVersion((v) => v + 1)}
           >
             <summary className="flex cursor-pointer list-none select-none items-center gap-2 text-sm font-medium text-ink [&::-webkit-details-marker]:hidden">
+              <span className="flex-1">Sleeping hours</span>
+              <button
+                type="button"
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-brand/25 text-[0.65rem] font-semibold text-ink/60"
+                aria-label="Sleeping hours help"
+                title="Quiet hours: no activity pings (random, overdue, planned) and no daily reminders. Pings resume after wake time."
+                onClick={(e) => e.preventDefault()}
+                onKeyDown={(e) => e.stopPropagation()}
+              >
+                ?
+              </button>
+            </summary>
+            <div className="mt-3 flex flex-col gap-3">
+              <label className="flex cursor-pointer items-center gap-2 text-sm text-ink/85">
+                <input
+                  type="checkbox"
+                  checked={sleepEnabled}
+                  onChange={(e) => setSleepEnabled(e.target.checked)}
+                  disabled={applyingSleep}
+                  className="h-4 w-4 rounded border-brand/30 text-brand focus:ring-brand"
+                />
+                Enabled
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1">
+                  <span className="text-xs font-medium text-ink/80">
+                    Sleep from
+                  </span>
+                  <TimePickerField
+                    id="sleep-start"
+                    value={sleepStartHm}
+                    onChange={setSleepStartHm}
+                    disabled={applyingSleep || !sleepEnabled}
+                    presets={SLEEP_START_PRESETS}
+                    aria-label="Sleep start"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-xs font-medium text-ink/80">
+                    Wake at
+                  </span>
+                  <TimePickerField
+                    id="sleep-end"
+                    value={sleepEndHm}
+                    onChange={setSleepEndHm}
+                    disabled={applyingSleep || !sleepEnabled}
+                    presets={SLEEP_END_PRESETS}
+                    aria-label="Wake time"
+                  />
+                </div>
+              </div>
+              <p className="text-[0.65rem] leading-snug text-ink/45">
+                Uses your system timezone. Default 22:00–08:00. Scheduled pings
+                move to wake time; nothing fires while you sleep.
+              </p>
+              <button
+                type="button"
+                onClick={() => void onApplySleepHours()}
+                disabled={applyingSleep}
+                className="self-start cursor-pointer rounded-md border border-brand/30 bg-brand/10 px-3 py-1.5 text-sm font-medium text-ink transition-colors hover:bg-brand/15 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {applyingSleep ? "Applying…" : "Apply sleeping hours"}
+              </button>
+              {sleepError ? (
+                <p className="text-sm font-medium text-red-600" role="status">
+                  {sleepError}
+                </p>
+              ) : null}
+            </div>
+          </details>
+
+          <details
+            className="rounded-lg border border-brand/20 bg-white/80 px-3 py-2 shadow-sm open:pb-3"
+            onToggle={() => setScheduleAccordionVersion((v) => v + 1)}
+          >
+            <summary className="flex cursor-pointer list-none select-none items-center gap-2 text-sm font-medium text-ink [&::-webkit-details-marker]:hidden">
               <span className="flex-1">Daily reminder ping</span>
               <button
                 type="button"
@@ -1670,19 +1799,23 @@ export default function App() {
                       Times (local)
                     </span>
                     {dailyDraft.times.map((t, i) => (
-                      <div key={i} className="flex gap-2">
-                        <input
-                          type="time"
+                      <div
+                        key={i}
+                        className="flex flex-col gap-2 sm:flex-row sm:items-start sm:gap-2"
+                      >
+                        <TimePickerField
+                          id={`daily-time-${i}`}
                           value={t}
-                          onChange={(e) =>
+                          onChange={(next) =>
                             setDailyDraft((d) => {
                               if (!d) return d;
                               const times = [...d.times];
-                              times[i] = e.target.value;
+                              times[i] = next;
                               return { ...d, times };
                             })
                           }
-                          className="rounded-md border border-brand/25 px-2 py-1.5 text-sm text-ink"
+                          presets={DAILY_REMINDER_TIME_PRESETS}
+                          aria-label={`Reminder time ${i + 1}`}
                         />
                         {dailyDraft.times.length > 1 ? (
                           <button

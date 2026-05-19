@@ -1,5 +1,6 @@
 //! Daily wellness reminders — fixed local times, optional burst nudges, separate from activity pings.
 
+use crate::db::sleep_hours;
 use crate::error::AppError;
 use chrono::{Local, NaiveTime, TimeZone};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -263,18 +264,22 @@ fn unix_for_local_hhmm_on_day(anchor_unix: i64, hhmm: &str) -> Option<i64> {
     Some(unix)
 }
 
+fn defer_daily_fire(conn: &Connection, unix: i64) -> Result<i64, AppError> {
+    sleep_hours::defer_unix_outside_sleep_conn(conn, unix)
+}
+
 /// Next fire: active burst continuation, else earliest enabled reminder slot after `now`.
-pub fn next_daily_fire_unix(conn: &Connection, now_unix: i64) -> rusqlite::Result<Option<i64>> {
+pub fn next_daily_fire_unix(conn: &Connection, now_unix: i64) -> Result<Option<i64>, AppError> {
     if !daily_reminder_enabled(conn)? {
         return Ok(None);
     }
 
     if let Some(burst_at) = get_burst_next_at(conn)? {
         if burst_at > now_unix {
-            return Ok(Some(burst_at));
+            return Ok(Some(defer_daily_fire(conn, burst_at)?));
         }
         if burst_at <= now_unix {
-            return Ok(Some(now_unix));
+            return Ok(Some(defer_daily_fire(conn, now_unix)?));
         }
     }
 
@@ -292,7 +297,10 @@ pub fn next_daily_fire_unix(conn: &Connection, now_unix: i64) -> rusqlite::Resul
             }
         }
     }
-    Ok(next)
+    match next {
+        Some(u) => Ok(Some(defer_daily_fire(conn, u)?)),
+        None => Ok(None),
+    }
 }
 
 pub struct DueDailyReminder {
@@ -301,8 +309,14 @@ pub struct DueDailyReminder {
 }
 
 /// What to show now: burst tick for stored id, or a scheduled slot (earliest matching).
-pub fn due_daily_reminder(conn: &Connection, now_unix: i64) -> rusqlite::Result<Option<DueDailyReminder>> {
+pub fn due_daily_reminder(conn: &Connection, now_unix: i64) -> Result<Option<DueDailyReminder>, AppError> {
     if !daily_reminder_enabled(conn)? {
+        return Ok(None);
+    }
+    let sleep = sleep_hours::read_sleep_hours_settings(conn)?;
+    if sleep.enabled
+        && sleep_hours::is_in_sleep_window_at_unix(now_unix, &sleep.start_hm, &sleep.end_hm)?
+    {
         return Ok(None);
     }
 

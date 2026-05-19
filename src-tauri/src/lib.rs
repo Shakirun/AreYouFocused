@@ -89,6 +89,8 @@ pub fn run() {
             commands::set_daily_reminder_enabled,
             commands::save_daily_reminder,
             commands::delete_daily_reminder,
+            commands::get_sleep_hours_settings,
+            commands::save_sleep_hours_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

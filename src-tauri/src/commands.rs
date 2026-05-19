@@ -2,6 +2,7 @@ use crate::db::daily_reminder::{
     self, DailyReminderSettings, SaveDailyReminderInput, PRESET_CATALOG,
 };
 use crate::db::repo::{self, ShortenGapInfo};
+use crate::db::sleep_hours::{self, SleepHoursSettings};
 use crate::error::AppError;
 use crate::export::{self, HistoryReport};
 use crate::AppState;
@@ -497,6 +498,41 @@ pub fn delete_daily_reminder(
     let conn = &mut *db;
     daily_reminder::delete_daily_reminder(conn, id)?;
     Ok(daily_reminder::read_daily_reminder_settings(conn)?)
+}
+
+#[tauri::command]
+pub fn get_sleep_hours_settings(
+    state: State<'_, AppState>,
+) -> Result<SleepHoursSettings, AppError> {
+    let db = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    Ok(sleep_hours::read_sleep_hours_settings(&db)?)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveSleepHoursInput {
+    pub enabled: bool,
+    pub start_hm: String,
+    pub end_hm: String,
+}
+
+#[tauri::command]
+pub fn save_sleep_hours_settings(
+    state: State<'_, AppState>,
+    input: SaveSleepHoursInput,
+) -> Result<SleepHoursSettings, AppError> {
+    let mut db = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = &mut *db;
+    let settings = sleep_hours::save_sleep_hours_settings(
+        conn,
+        input.enabled,
+        &input.start_hm,
+        &input.end_hm,
+    )?;
+    repo::reschedule_next_ping_for_sleep_change(conn)?;
+    let mut rng = rand::thread_rng();
+    repo::ensure_next_ping_scheduled(conn, unix_now(), &mut rng)?;
+    Ok(settings)
 }
 
 /// Top distinct capture texts by frequency (for quick-insert chips in the capture UI).

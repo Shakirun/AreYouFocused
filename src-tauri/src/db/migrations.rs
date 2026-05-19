@@ -9,6 +9,7 @@ pub fn apply_initial(conn: &Connection) -> rusqlite::Result<()> {
     migrate_captures_finished(conn)?;
     migrate_overdue_ping_settings(conn)?;
     migrate_daily_reminders(conn)?;
+    migrate_sleep_hours_settings(conn)?;
     Ok(())
 }
 
@@ -150,6 +151,29 @@ fn migrate_daily_reminders(conn: &Connection) -> rusqlite::Result<()> {
     if !scheduler_column_exists(conn, "daily_burst_next_at_unix")? {
         conn.execute(
             "ALTER TABLE scheduler_state ADD COLUMN daily_burst_next_at_unix INTEGER",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+/// Quiet hours for activity + daily pings (`sleep_hours` module).
+fn migrate_sleep_hours_settings(conn: &Connection) -> rusqlite::Result<()> {
+    if !setting_exists(conn, "sleep_enabled")? {
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('sleep_enabled', '0')",
+            [],
+        )?;
+    }
+    if !setting_exists(conn, "sleep_start_hm")? {
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('sleep_start_hm', '22:00')",
+            [],
+        )?;
+    }
+    if !setting_exists(conn, "sleep_end_hm")? {
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('sleep_end_hm', '08:00')",
             [],
         )?;
     }

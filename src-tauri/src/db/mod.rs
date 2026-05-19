@@ -3,6 +3,7 @@
 mod migrations;
 pub mod daily_reminder;
 pub mod repo;
+pub mod sleep_hours;
 
 use rusqlite::Connection;
 use std::path::Path;

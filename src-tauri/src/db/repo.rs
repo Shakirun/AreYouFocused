@@ -1,5 +1,6 @@
 //! Data access helpers.
 
+use crate::db::sleep_hours;
 use crate::domain::ping_plan;
 use crate::error::AppError;
 use rand::Rng;
@@ -354,11 +355,20 @@ pub fn get_next_ping_at_unix(conn: &Connection) -> rusqlite::Result<Option<i64>>
     )
 }
 
-pub fn set_next_ping_at_unix(conn: &Connection, unix: i64) -> rusqlite::Result<()> {
+pub fn set_next_ping_at_unix(conn: &Connection, unix: i64) -> Result<(), AppError> {
+    let adjusted = sleep_hours::defer_unix_outside_sleep_conn(conn, unix)?;
     conn.execute(
         "UPDATE scheduler_state SET next_ping_at_unix = ?1 WHERE id = 1",
-        params![unix],
+        params![adjusted],
     )?;
+    Ok(())
+}
+
+/// Re-apply sleep deferral to the stored next ping (after settings change).
+pub fn reschedule_next_ping_for_sleep_change(conn: &Connection) -> Result<(), AppError> {
+    if let Some(t) = get_next_ping_at_unix(conn)? {
+        set_next_ping_at_unix(conn, t)?;
+    }
     Ok(())
 }
 
@@ -417,14 +427,20 @@ pub fn ensure_next_ping_scheduled<R: Rng + ?Sized>(
                         let next = ping_plan::next_ping_after(now_unix, min_m, max_m, rng);
                         set_next_ping_at_unix(conn, next)?;
                         set_next_ping_kind(conn, NextPingKind::Standard)?;
-                        Ok(next)
+                        Ok(get_next_ping_at_unix(conn)?.unwrap_or(next))
                     } else {
                         Ok(now_unix.saturating_add(AWAITING_IDLE_SLEEP_SECS))
                     }
                 } else {
-                    Ok(t)
+                    set_next_ping_at_unix(conn, t)?;
+                    Ok(get_next_ping_at_unix(conn)?.unwrap_or(t))
                 }
             } else if get_next_ping_kind(conn)? == NextPingKind::PlannedCheck {
+                let fire_at = sleep_hours::defer_unix_outside_sleep_conn(conn, now_unix)?;
+                if fire_at > now_unix {
+                    set_next_ping_at_unix(conn, fire_at)?;
+                    return Ok(fire_at);
+                }
                 Ok(now_unix)
             } else if should_use_standard_schedule(conn, now_unix)? {
                 schedule_random_next_ping(conn, now_unix, rng)?;
@@ -452,13 +468,18 @@ fn ensure_overdue_ping_scheduled<R: Rng + ?Sized>(
     let kind = get_next_ping_kind(conn)?;
     match get_next_ping_at_unix(conn)? {
         Some(t) if t > now_unix && kind == NextPingKind::Overdue => {
-            // Recurring overdue ping already scheduled after the previous notification.
-            Ok(t)
+            set_next_ping_at_unix(conn, t)?;
+            Ok(get_next_ping_at_unix(conn)?.unwrap_or(t))
         }
         _ => {
             // First overdue notification (or missed fire): notify now; the scheduler
             // calls `schedule_overdue_next_ping` after the toast to roll the next interval.
             set_next_ping_kind(conn, NextPingKind::Overdue)?;
+            let fire_at = sleep_hours::defer_unix_outside_sleep_conn(conn, now_unix)?;
+            if fire_at > now_unix {
+                set_next_ping_at_unix(conn, fire_at)?;
+                return Ok(fire_at);
+            }
             Ok(now_unix)
         }
     }
@@ -531,13 +552,13 @@ const AWAITING_IDLE_SLEEP_SECS: i64 = 86_400;
 pub const TOAST_ADJUST_MINUTES: i64 = 15;
 
 /// Pushes the next ping to **now + [SNOOZE_MINUTES]**, overwriting any earlier scheduled time.
-pub fn snooze_next_ping(conn: &Connection, now_unix: i64) -> rusqlite::Result<i64> {
+pub fn snooze_next_ping(conn: &Connection, now_unix: i64) -> Result<i64, AppError> {
     let next = now_unix.saturating_add(SNOOZE_MINUTES * 60);
     set_next_ping_at_unix(conn, next)?;
     set_next_ping_kind(conn, NextPingKind::Standard)?;
     set_awaiting_followup(conn, false)?;
     clear_planned_check_subject(conn)?;
-    Ok(next)
+    Ok(get_next_ping_at_unix(conn)?.unwrap_or(next))
 }
 
 pub fn set_ping_min_max_minutes(
@@ -1044,7 +1065,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM settings", [], |row| row.get(0))
             .expect("count settings");
-        assert_eq!(count, 7);
+        assert_eq!(count, 10);
         let tables: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='daily_reminders'",
@@ -1602,6 +1623,30 @@ mod tests {
 
         schedule_overdue_next_ping(&conn, now, &mut rng).expect("noop");
         assert_ne!(get_next_ping_kind(&conn).unwrap(), NextPingKind::Overdue);
+    }
+
+    #[test]
+    fn schedule_random_next_ping_defers_into_sleep_window() {
+        use crate::db::sleep_hours;
+        use chrono::{TimeZone, Timelike};
+        let conn = open_memory().expect("db");
+        sleep_hours::save_sleep_hours_settings(&conn, true, "22:00", "08:00")
+            .expect("sleep");
+        let mut rng = StdRng::seed_from_u64(909);
+        let local = chrono::Local::now();
+        let date = local.date_naive();
+        let night = date.and_time(chrono::NaiveTime::from_hms_opt(23, 0, 0).unwrap());
+        let now = chrono::Local
+            .from_local_datetime(&night)
+            .single()
+            .unwrap()
+            .timestamp();
+        schedule_random_next_ping(&conn, now, &mut rng).expect("schedule");
+        let next = get_next_ping_at_unix(&conn).unwrap().unwrap();
+        let next_local = chrono::Local.timestamp_opt(next, 0).single().unwrap();
+        assert_eq!(next_local.hour(), 8);
+        assert_eq!(next_local.minute(), 0);
+        assert!(next > now);
     }
 
     #[test]

@@ -21,6 +21,8 @@ pub enum AppError {
     Export(String),
     #[error("daily reminder: {0}")]
     InvalidDailyReminder(String),
+    #[error("sleeping hours: {0}")]
+    InvalidSleepHours(String),
 }
 
 impl serde::Serialize for AppError {
