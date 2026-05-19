@@ -15,7 +15,6 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["apk", "aab"],
     "android": {
       "minSdkVersion": 24
     }
