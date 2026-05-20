@@ -50,6 +50,25 @@ Optional editor-specific tooling or personal notes can live outside tracked file
 - **WebView2:** UI runs in **Microsoft Edge WebView2**. **Evergreen** runtime ships with current Windows 10/11 for most users. If the window is blank or the app exits on startup, install or repair from [WebView2 Runtime — consumer download](https://developer.microsoft.com/microsoft-edge/webview2/consumer/) or [WebView2 overview](https://developer.microsoft.com/microsoft-edge/webview2/).
 - **Installers:** NSIS uses **`webviewInstallMode.downloadBootstrapper`** so users without WebView2 get the official bootstrapper when needed; see [Distribute your app and the WebView2 Runtime](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution).
 
+## Download (Windows)
+
+Stable installers are published on **[GitHub Releases](https://github.com/Shakirun/AreYouFocused/releases)** (not stored in git).
+
+1. Open the latest release (or the version you need).
+2. Download **`AreYouFocused_<version>_x64-setup.exe`** (e.g. `AreYouFocused_0.3.0_x64-setup.exe`).
+3. Run the installer. **WebView2** is required — see **Runtime (Windows desktop)** above.
+
+Direct link pattern: `https://github.com/Shakirun/AreYouFocused/releases/download/v<version>/AreYouFocused_<version>_x64-setup.exe`
+
+## Releases (maintainers)
+
+1. Merge **`develop` → `main`** when the release is ready; ensure **`src-tauri/tauri.conf.json`**, **`src-tauri/Cargo.toml`**, and **`package.json`** (non-`-dev` version on main) match the release number.
+2. On **`main`**, create and push an annotated tag: `git tag -a v0.3.0 -m "v0.3.0"` then `git push origin v0.3.0`.
+3. The **[Release workflow](.github/workflows/release.yml)** builds the NSIS installer on `windows-latest` and attaches it to the GitHub Release for that tag.
+4. Optional: run the same workflow manually via **Actions → Release → Run workflow** (version input must match `tauri.conf.json`).
+
+Code signing is not configured in CI yet; Windows SmartScreen may warn on first download until signing is added later.
+
 ## Git branches
 
-Integrate on **`develop`** (unstable `*-dev.*` versions); ship stable releases via MR **`develop` → `main`**.
+Integrate on **`develop`** (unstable `*-dev.*` versions); ship stable releases via MR **`develop` → `main`**, then tag on **`main`** as above.

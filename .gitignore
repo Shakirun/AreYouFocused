@@ -160,8 +160,12 @@ RELEASING.md
 BUILD-WINDOWS.md
 ANDROID.md
 
-# GitHub PR templates & dev automation
-.github/
+# GitHub — commit workflows; ignore local/dev-only templates
+.github/pull_request_template.md
+
+# Local release staging (CI uploads from target/; do not commit installers)
+releases/
+releases/*.exe
 
 # Dev tooling & Cursor hooks/scripts
 devtools/
