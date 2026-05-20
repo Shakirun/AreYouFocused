@@ -29,7 +29,6 @@ pub struct SubmitGapAfterShortenInput {
     pub planned_duration_minutes: Option<i64>,
 }
 
-/// Snapshot of scheduler row + ping interval settings for the UI.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SchedulerStatus {
@@ -68,7 +67,6 @@ pub struct QuickPickRow {
     pub count: i64,
 }
 
-/// Active capture for the "Currently on:" header (`None` body → show "Nothing").
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CurrentActivityStatus {
@@ -330,7 +328,6 @@ fn build_report_locked(
     export::build_history_report(conn, since_unix, until_unix, unix_now())
 }
 
-/// Save history report as CSV or XLSX via native save dialog.
 #[tauri::command]
 pub fn export_history_file(
     app: AppHandle,
@@ -378,7 +375,6 @@ pub fn export_history_file(
     })
 }
 
-/// Print-ready HTML for the selected period (use system Print → Save as PDF).
 #[tauri::command]
 pub fn history_report_html(
     state: State<'_, AppState>,
@@ -391,9 +387,7 @@ pub fn history_report_html(
 
 const HISTORY_REPORT_WINDOW_LABEL: &str = "history-report";
 
-/// Open a dedicated webview with the report and trigger the system print dialog.
-///
-/// Uses a Tauri webview instead of `window.open()` (blocked in the embedded webview).
+/// Print via a dedicated Tauri webview (`window.open` is blocked in the embedded webview).
 #[tauri::command]
 pub async fn history_report_print(
     app: AppHandle,
@@ -535,7 +529,6 @@ pub fn save_sleep_hours_settings(
     Ok(settings)
 }
 
-/// Top distinct capture texts by frequency (for quick-insert chips in the capture UI).
 #[tauri::command]
 pub fn list_top_quick_picks(state: State<'_, AppState>) -> Result<Vec<QuickPickRow>, AppError> {
     let mut db = state.db.lock().unwrap_or_else(|e| e.into_inner());

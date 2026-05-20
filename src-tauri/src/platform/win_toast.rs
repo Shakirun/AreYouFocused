@@ -89,12 +89,6 @@ fn build_actions(buttons: &[ToastButton]) -> String {
     actions
 }
 
-/// Show a ping toast:
-/// - `scenario="reminder"` — stays on screen until dismissed (OS may still auto-hide the banner)
-/// - `duration="long"` — up to ~25s banner visibility where supported
-/// - unique `tag` per notification — avoids "+N notifications" stacking
-/// - `launch` — body / Action Center activation argument
-/// - retained `ToastNotification` — historical clicks work while the process lives
 pub fn show_ping_toast<F>(
     app_id: &str,
     content: &PingToastContent,

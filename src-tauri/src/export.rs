@@ -22,7 +22,6 @@ fn activity_color(activity: &str) -> &'static str {
     ACTIVITY_COLORS[(h as usize) % ACTIVITY_COLORS.len()]
 }
 
-/// Local wall-clock datetime for exports (e.g. `19/05/2026 16:30`).
 fn format_unix_local(unix: i64) -> String {
     match Local.timestamp_opt(unix, 0) {
         chrono::LocalResult::Single(dt) => dt.format("%d/%m/%Y %H:%M").to_string(),
@@ -114,7 +113,6 @@ fn format_time_range(row: &TimelineRow) -> String {
     format!("{start}–{end}")
 }
 
-/// User-facing label for a timeline segment (what they typed for that save).
 fn timeline_display_text(row: &TimelineRow) -> &str {
     let body = row.body.trim();
     if body.is_empty() {
@@ -124,7 +122,6 @@ fn timeline_display_text(row: &TimelineRow) -> &str {
     }
 }
 
-/// Follow-up segments can differ from the rolled-up activity key (`thread_root`).
 fn timeline_detail_differs(row: &TimelineRow) -> bool {
     let body = row.body.trim();
     !body.is_empty() && body != row.activity.trim()

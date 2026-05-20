@@ -98,7 +98,6 @@ type CurrentActivityStatus = {
   plannedEndAtUnix: number | null;
 };
 
-/** Emitted after −15 min shortens the last logged segment (`gap-fill-needed`). */
 type ShortenGapPrompt = {
   adjustedEndUnix: number;
   gapMinutes: number;
@@ -110,7 +109,6 @@ const RECENT_CAPTURES_LIMIT = 15;
 /** Matches `repo::PING_MAX_MINUTES_CAP` (one week). */
 const PING_MAX_MINUTES_CAP = 10_080;
 
-/** Planned / extra duration presets (minutes); custom values allowed in the input. */
 const PLANNED_DURATION_PRESETS = [5, 15, 30, 60, 120, 240, 360] as const;
 
 const DEFAULT_PLANNED_MINUTES = 30;
@@ -269,7 +267,6 @@ function formatHoursMinutesParts(totalMinutes: number): string {
   return `${hours} hour${hours === 1 ? "" : "s"} ${mins} minute${mins === 1 ? "" : "s"}`;
 }
 
-/** Green countdown or warm overdue line for timed "Currently on" tasks. */
 function formatPlannedCountdown(
   plannedEndUnix: number,
   nowUnix: number,

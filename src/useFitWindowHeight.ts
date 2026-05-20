@@ -1,14 +1,8 @@
 import { type RefObject, useEffect, useRef } from "react";
 
-/** Fixed inner width for the non-resizable capture window (`tauri.conf.json`). */
 const WINDOW_INNER_WIDTH = 460;
 const MIN_INNER_HEIGHT = 320;
-/**
- * Cap fit-to-content growth so tall tabs (e.g. many daily reminders) scroll
- * inside the shell instead of growing the window without bound.
- */
 export const MAX_WINDOW_INNER_HEIGHT = 770;
-/** Avoid a persistent 1px scrollbar from rounding / shadows. */
 const HEIGHT_SLOP_PX = 12;
 
 function measureContentHeight(contentEl: HTMLElement | null): number {
@@ -20,13 +14,8 @@ function measureContentHeight(contentEl: HTMLElement | null): number {
   return document.documentElement.scrollHeight;
 }
 
-/**
- * Resizes the Tauri window inner height to match visible app content.
- * No-op in plain browser (`vite dev` without Tauri IPC).
- */
 export function useFitWindowHeight(
   contentRef: RefObject<HTMLElement | null>,
-  /** Re-measure when tab, accordion, or other layout-affecting state changes. */
   resizeDeps: readonly unknown[] = [],
 ) {
   const lastApplied = useRef(0);

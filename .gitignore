@@ -146,7 +146,23 @@ vite.config.ts.timestamp-*
 src-tauri/target/
 src-tauri/gen/
 
-# Optional local-only: editor config, secrets, personal docs (not part of the shared source tree).
-.cursor
-docs
+# --- IDE / editor (local only) ---
+.idea/
+.vscode/
+.cursor/
+
+# --- Dev workflow, plans, agent docs (human docs: README.md only) ---
+docs/
+**/plans/
 AGENTS.md
+I18N.md
+RELEASING.md
+BUILD-WINDOWS.md
+ANDROID.md
+
+# GitHub PR templates & dev automation
+.github/
+
+# Dev tooling & Cursor hooks/scripts
+devtools/
+scripts/cursor/

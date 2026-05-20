@@ -96,7 +96,6 @@ pub fn validate_planned_duration_minutes(m: i64) -> Result<(), AppError> {
     Ok(())
 }
 
-/// True when a planned-check ping is still scheduled in the future.
 pub fn has_future_planned_ping(conn: &Connection, now_unix: i64) -> rusqlite::Result<bool> {
     if get_next_ping_kind(conn)? != NextPingKind::PlannedCheck {
         return Ok(false);
@@ -184,7 +183,6 @@ fn query_active_capture_row(conn: &Connection) -> rusqlite::Result<Option<Active
     Ok(row.filter(|r| !r.body.trim().is_empty()))
 }
 
-/// Latest **active-window** unfinished timed capture `(started_at_unix, duration_minutes)`.
 fn latest_unfinished_timed_capture(
     conn: &Connection,
 ) -> rusqlite::Result<Option<(i64, i64)>> {
@@ -212,20 +210,17 @@ fn clear_stale_overdue_scheduling(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Planned end unix for the active unfinished timed capture, if any.
 pub fn unfinished_timed_planned_end_unix(conn: &Connection) -> rusqlite::Result<Option<i64>> {
     Ok(latest_unfinished_timed_capture(conn)?
         .map(|(started, dur)| started.saturating_add(dur.saturating_mul(60))))
 }
 
-/// True when a timed task's planned end is in the past and it is not marked done.
 pub fn is_timed_capture_overdue(conn: &Connection, now_unix: i64) -> rusqlite::Result<bool> {
     Ok(unfinished_timed_planned_end_unix(conn)?
         .map(|end| end <= now_unix)
         .unwrap_or(false))
 }
 
-/// Overdue follow-up pings apply when the planned end passed and the task is still open.
 pub fn should_use_overdue_schedule(conn: &Connection, now_unix: i64) -> rusqlite::Result<bool> {
     if !overdue_ping_enabled(conn)? {
         return Ok(false);
@@ -233,7 +228,6 @@ pub fn should_use_overdue_schedule(conn: &Connection, now_unix: i64) -> rusqlite
     Ok(is_timed_capture_overdue(conn, now_unix)?)
 }
 
-/// True when the **Currently on** window has an unfinished timed capture.
 pub fn has_unfinished_timed_capture(conn: &Connection) -> rusqlite::Result<bool> {
     Ok(latest_unfinished_timed_capture(conn)?.is_some())
 }
@@ -255,7 +249,6 @@ pub fn should_use_standard_schedule(
     Ok(true)
 }
 
-/// Rolls the next ping using the user's random min/max interval and marks it **standard**.
 pub fn schedule_random_next_ping<R: Rng + ?Sized>(
     conn: &Connection,
     now_unix: i64,
@@ -274,7 +267,6 @@ pub fn schedule_random_next_ping<R: Rng + ?Sized>(
     Ok(())
 }
 
-/// Rolls the next ping using overdue min/max while a timed task is past its planned end.
 pub fn schedule_overdue_next_ping<R: Rng + ?Sized>(
     conn: &Connection,
     now_unix: i64,
