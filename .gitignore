@@ -162,6 +162,7 @@ ANDROID.md
 
 # GitHub — commit workflows; ignore local/dev-only templates
 .github/pull_request_template.md
+.github/PULL_REQUEST_TEMPLATE/
 
 # Local release staging (CI uploads from target/; do not commit installers)
 releases/
