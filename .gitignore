@@ -142,7 +142,32 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
 
-# Local only: Cursor config, MCP secrets, agent handbook, design/docs (solo dev).
-.cursor
-docs
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# --- IDE / editor (local only) ---
+.idea/
+.vscode/
+.cursor/
+
+# --- Dev workflow, plans, agent docs (human docs: README.md only) ---
+docs/
+**/plans/
 AGENTS.md
+I18N.md
+RELEASING.md
+BUILD-WINDOWS.md
+ANDROID.md
+
+# GitHub — commit workflows; ignore local/dev-only templates
+.github/pull_request_template.md
+.github/PULL_REQUEST_TEMPLATE/
+
+# Local release staging (CI uploads from target/; do not commit installers)
+releases/
+releases/*.exe
+
+# Dev tooling & Cursor hooks/scripts
+devtools/
+scripts/cursor/
