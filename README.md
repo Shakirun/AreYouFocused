@@ -2,7 +2,7 @@
 
 Desktop-first **random-ping** productivity tracker (WhatNow-style): honest, local-first, SQLite.
 
-**Language policy:** All **public repo docs**, **in-app UI copy**, and **code comments** are **English** by default. Planned **i18n** for additional locales is described in [I18N.md](I18N.md).
+**Language policy:** All **public repo docs**, **in-app UI copy**, and **code comments** are **English** by default.
 
 ## Features
 
@@ -52,4 +52,4 @@ Optional editor-specific tooling or personal notes can live outside tracked file
 
 ## Git branches
 
-Integrate on **`develop`** (unstable `*-dev.*` versions); ship stable releases via MR **`develop` → `main`**. Details: [RELEASING.md](RELEASING.md).
+Integrate on **`develop`** (unstable `*-dev.*` versions); ship stable releases via MR **`develop` → `main`**.
