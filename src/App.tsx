@@ -401,9 +401,9 @@ export default function App() {
   const [dailyError, setDailyError] = useState<string | null>(null);
   const [dailySaving, setDailySaving] = useState(false);
   const [dailyTogglingEnabled, setDailyTogglingEnabled] = useState(false);
-  const [sleepEnabled, setSleepEnabled] = useState(false);
+  const [sleepEnabled, setSleepEnabled] = useState(true);
   const [sleepStartHm, setSleepStartHm] = useState("22:00");
-  const [sleepEndHm, setSleepEndHm] = useState("08:00");
+  const [sleepEndHm, setSleepEndHm] = useState("06:00");
   const [sleepError, setSleepError] = useState<string | null>(null);
   const [applyingSleep, setApplyingSleep] = useState(false);
   const [snoozing, setSnoozing] = useState(false);
@@ -560,9 +560,9 @@ export default function App() {
       setSleepStartHm(s.startHm);
       setSleepEndHm(s.endHm);
     } catch {
-      setSleepEnabled(false);
+      setSleepEnabled(true);
       setSleepStartHm("22:00");
-      setSleepEndHm("08:00");
+      setSleepEndHm("06:00");
     }
   }, []);
 
@@ -1196,7 +1196,7 @@ export default function App() {
         </button>
       </nav>
 
-      <div className="app-tab-scroll flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+      <div className="app-tab-scroll flex flex-col gap-3 overflow-y-auto">
       {notificationsBlocked ? (
         <p
           className="rounded-lg border border-action/35 bg-action/[0.06] px-3 py-2 text-xs leading-snug text-ink/80"
@@ -1669,7 +1669,7 @@ export default function App() {
                 </div>
               </div>
               <p className="text-[0.65rem] leading-snug text-ink/45">
-                Uses your system timezone. Default 22:00–08:00. Scheduled pings
+                Uses your system timezone. Default 22:00–06:00. Scheduled pings
                 move to wake time; nothing fires while you sleep.
               </p>
               <button
