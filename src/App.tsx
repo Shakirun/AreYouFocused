@@ -7,6 +7,8 @@ import {
   SLEEP_START_PRESETS,
   TimePickerField,
 } from "./TimePickerField";
+import { ensureNotificationPermission } from "./notifications";
+import { IS_MOBILE } from "./platform";
 import {
   MAX_WINDOW_INNER_HEIGHT,
   useFitWindowHeight,
@@ -538,6 +540,18 @@ export default function App() {
     void refreshSchedulerStatus();
     void refreshCaptureLists();
   }, [refreshSchedulerStatus, refreshCaptureLists]);
+
+  const [notificationsBlocked, setNotificationsBlocked] = useState(false);
+  useEffect(() => {
+    if (!IS_MOBILE) return;
+    let cancelled = false;
+    void ensureNotificationPermission().then((granted) => {
+      if (!cancelled) setNotificationsBlocked(!granted);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const refreshSleepHours = useCallback(async () => {
     try {
@@ -1134,8 +1148,10 @@ export default function App() {
   return (
     <main
       ref={mainRef}
-      className="mx-auto flex max-w-md flex-col overflow-hidden px-4 py-5"
-      style={{ maxHeight: MAX_WINDOW_INNER_HEIGHT }}
+      className={`mx-auto flex max-w-md flex-col overflow-hidden px-4 py-5 ${
+        IS_MOBILE ? "app-shell-mobile" : ""
+      }`}
+      style={IS_MOBILE ? undefined : { maxHeight: MAX_WINDOW_INNER_HEIGHT }}
     >
       <nav
         className="flex shrink-0 gap-1 rounded-xl border border-brand/20 bg-white/70 p-1 shadow-sm"
@@ -1181,6 +1197,15 @@ export default function App() {
       </nav>
 
       <div className="app-tab-scroll flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+      {notificationsBlocked ? (
+        <p
+          className="rounded-lg border border-action/35 bg-action/[0.06] px-3 py-2 text-xs leading-snug text-ink/80"
+          role="alert"
+        >
+          Notifications are turned off for AreYouFocused, so pings cannot reach
+          you. Enable them in your phone&apos;s app settings.
+        </p>
+      ) : null}
       {mainTab === "capture" ? (
         <section
           className={`capture-status-card flex flex-col gap-0 p-3.5 ${
@@ -2065,6 +2090,17 @@ export default function App() {
             )}
           </div>
 
+          {IS_MOBILE ? (
+            <div className="flex flex-col gap-1 rounded-lg border border-brand/20 bg-white/90 p-3">
+              <p className="text-xs font-medium uppercase tracking-wide text-ink/55">
+                Export report
+              </p>
+              <p className="text-xs leading-snug text-ink/60">
+                CSV, XLSX and PDF export are available in the desktop app. On
+                the phone you can copy the summary above.
+              </p>
+            </div>
+          ) : (
           <div className="flex flex-col gap-2 rounded-lg border border-brand/20 bg-white/90 p-3">
             <p className="text-xs font-medium uppercase tracking-wide text-ink/55">
               Export report
@@ -2162,6 +2198,7 @@ export default function App() {
               </p>
             ) : null}
           </div>
+          )}
 
           <div className="flex flex-col gap-2">
             <p className="text-xs font-medium text-ink/65">
