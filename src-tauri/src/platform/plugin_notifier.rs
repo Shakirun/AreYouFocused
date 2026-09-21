@@ -5,8 +5,10 @@
 //!
 //! On mobile the process may be frozen or killed in the background, so the next
 //! ping is additionally handed to the OS as a scheduled notification (AlarmManager /
-//! UNUserNotificationCenter). Both paths share one notification id, so whichever
-//! fires first is simply replaced by the other instead of stacking up.
+//! UNUserNotificationCenter). The scheduled copy uses its own id: the plugin's
+//! `cancel`/`schedule` for an id also dismisses a *visible* notification with that
+//! id, so sharing one id would make re-arming the next alarm wipe the ping that was
+//! just shown. Instead, the in-process path dismisses the scheduled copy when it fires.
 
 use super::{DailyReminderNotifier, PingNotifier};
 use crate::db::repo::{self, NextPingKind};
@@ -22,10 +24,13 @@ use tauri_plugin_notification::Schedule;
 /// Android collapses long notification bodies; keep the preview short.
 const PREVIEW_MAX_CHARS: usize = 90;
 
-/// Shared by the in-process ping and its OS-scheduled mirror (see module docs).
+/// Ping shown directly by the in-process scheduler loop.
 const PING_NOTIFICATION_ID: i32 = 1001;
+/// OS-scheduled mirror of the next ping (mobile only, see module docs).
+#[cfg(mobile)]
+const SCHEDULED_PING_NOTIFICATION_ID: i32 = 1002;
 
-const PING_TITLE: &str = "AreYouFocused";
+const DAILY_TITLE: &str = "Daily reminder";
 
 #[cfg(mobile)]
 #[derive(Default)]
@@ -59,35 +64,56 @@ fn trim_preview(s: &str, max_chars: usize) -> String {
     format!("{taken}…")
 }
 
-fn ping_body(app: &AppHandle) -> Result<String, AppError> {
+/// `(title, body)` for the next ping. The OS already shows the app name, so the
+/// title carries the question and the body the activity it refers to.
+fn ping_content(app: &AppHandle) -> Result<(String, String), AppError> {
     let state = app.state::<AppState>();
     let db = state.db.lock().unwrap_or_else(|p| p.into_inner());
     let conn = &*db;
-    let body = match repo::get_next_ping_kind(conn)? {
+    let content = match repo::get_next_ping_kind(conn)? {
         NextPingKind::PlannedCheck => {
             let subj = repo::get_planned_check_subject(conn)?.unwrap_or_default();
-            format!(
-                "Planned time is up — still doing this? “{}”",
-                trim_preview(&subj, PREVIEW_MAX_CHARS)
+            (
+                "Planned time is up".to_string(),
+                format!(
+                    "Still doing this? “{}”",
+                    trim_preview(&subj, PREVIEW_MAX_CHARS)
+                ),
             )
         }
         NextPingKind::Overdue => {
             let subj = repo::get_planned_check_subject(conn)?
                 .or_else(|| repo::latest_capture_body(conn).ok().flatten())
                 .unwrap_or_default();
-            format!(
-                "Past your planned finish — still on this? “{}”",
-                trim_preview(&subj, PREVIEW_MAX_CHARS)
+            (
+                "Past your planned finish".to_string(),
+                format!(
+                    "Still on this? “{}”",
+                    trim_preview(&subj, PREVIEW_MAX_CHARS)
+                ),
             )
         }
-        NextPingKind::Standard => "What are you doing right now?".to_string(),
+        NextPingKind::Standard => {
+            let last = repo::latest_capture_body(conn)?
+                .map(|s| trim_preview(&s, PREVIEW_MAX_CHARS))
+                .filter(|s| !s.is_empty());
+            let body = match last {
+                Some(last) => format!("Last answer: “{last}”"),
+                None => "Tap to capture it.".to_string(),
+            };
+            ("What are you doing right now?".to_string(), body)
+        }
     };
-    Ok(body)
+    Ok(content)
 }
 
+/// Drops the pending alarm and, if it already fired, its visible notification.
 #[cfg(mobile)]
 fn cancel_scheduled_ping(app: &AppHandle) {
-    if let Err(e) = app.notification().cancel(vec![PING_NOTIFICATION_ID]) {
+    if let Err(e) = app
+        .notification()
+        .cancel(vec![SCHEDULED_PING_NOTIFICATION_ID])
+    {
         tracing::debug!("cancel scheduled ping notification: {e}");
     }
 }
@@ -100,11 +126,11 @@ impl PingNotifier for PluginNotifier {
             let mut s = self.scheduled.lock().unwrap_or_else(|p| p.into_inner());
             s.synced = false;
         }
-        let body = ping_body(app)?;
+        let (title, body) = ping_content(app)?;
         app.notification()
             .builder()
             .id(PING_NOTIFICATION_ID)
-            .title(PING_TITLE)
+            .title(title)
             .body(body)
             .show()
             .map_err(|e| AppError::Notify(e.to_string()))
@@ -130,18 +156,18 @@ impl PingNotifier for PluginNotifier {
             tracing::warn!("scheduled ping: invalid unix time {at}");
             return;
         };
-        let body = match ping_body(app) {
-            Ok(b) => b,
+        let (title, body) = match ping_content(app) {
+            Ok(c) => c,
             Err(e) => {
-                tracing::warn!("scheduled ping: body: {e}");
+                tracing::warn!("scheduled ping: content: {e}");
                 return;
             }
         };
         let result = app
             .notification()
             .builder()
-            .id(PING_NOTIFICATION_ID)
-            .title(PING_TITLE)
+            .id(SCHEDULED_PING_NOTIFICATION_ID)
+            .title(title)
             .body(body)
             .schedule(Schedule::At {
                 date,
@@ -175,7 +201,7 @@ impl DailyReminderNotifier for PluginNotifier {
         tracing::debug!("daily reminder notification (id={reminder_id})");
         app.notification()
             .builder()
-            .title("Daily reminder")
+            .title(DAILY_TITLE)
             .body(trim_preview(label, 120))
             .show()
             .map_err(|e| AppError::Notify(e.to_string()))
