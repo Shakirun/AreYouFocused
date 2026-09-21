@@ -50,8 +50,10 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android NDK
-        run: sdkmanager --install "ndk;${NDK_VERSION}" "platform-tools" > /dev/null
+      # compileSdk/targetSdk 36 and AGP 8.11's build-tools; Gradle can auto-download
+      # these but doing it here keeps the build step deterministic.
+      - name: Install Android SDK components
+        run: sdkmanager --install "ndk;${NDK_VERSION}" "platforms;android-36" "build-tools;35.0.0" "platform-tools" > /dev/null
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
