@@ -47,13 +47,12 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # The action's default package list includes the retired `tools` package, so list
+      # what we need explicitly: NDK, compileSdk/targetSdk 36 and AGP 8.11's build-tools.
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
-
-      # compileSdk/targetSdk 36 and AGP 8.11's build-tools; Gradle can auto-download
-      # these but doing it here keeps the build step deterministic.
-      - name: Install Android SDK components
-        run: sdkmanager --install "ndk;${NDK_VERSION}" "platforms;android-36" "build-tools;35.0.0" "platform-tools" > /dev/null
+        with:
+          packages: platform-tools platforms;android-36 build-tools;35.0.0 ndk;${{ env.NDK_VERSION }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
