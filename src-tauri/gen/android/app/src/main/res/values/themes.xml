@@ -1,0 +1,7 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- The web UI is light-only; a fixed light theme keeps the padded system bar
+         areas (see MainActivity) matching the app surface color. -->
+    <style name="Theme.are_you_focused" parent="Theme.MaterialComponents.Light.NoActionBar">
+        <item name="android:windowBackground">@color/app_surface</item>
+    </style>
+</resources>
