@@ -5,7 +5,8 @@ use chrono::{Local, NaiveTime, TimeZone, Timelike};
 use rusqlite::{params, Connection};
 
 pub const DEFAULT_SLEEP_START: &str = "22:00";
-pub const DEFAULT_SLEEP_END: &str = "08:00";
+pub const DEFAULT_SLEEP_END: &str = "06:00";
+pub const DEFAULT_SLEEP_ENABLED: bool = true;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -90,7 +91,7 @@ fn parse_hm(hm: &str) -> Result<(u32, u32), AppError> {
     Ok((h, m))
 }
 
-/// Sleep window `[start, end)` — `end` is the first minute **awake** (e.g. 08:00).
+/// Sleep window `[start, end)` — `end` is the first minute **awake** (e.g. 06:00).
 pub fn is_in_sleep_window_at_unix(
     unix: i64,
     start_hm: &str,
@@ -197,6 +198,25 @@ mod tests {
             .single()
             .unwrap()
             .timestamp()
+    }
+
+    #[test]
+    fn fresh_db_sleep_hours_defaults_enabled_22_to_06() {
+        let conn = open_memory().unwrap();
+        let s = read_sleep_hours_settings(&conn).unwrap();
+        assert_eq!(s.enabled, DEFAULT_SLEEP_ENABLED);
+        assert_eq!(s.start_hm, DEFAULT_SLEEP_START);
+        assert_eq!(s.end_hm, DEFAULT_SLEEP_END);
+    }
+
+    #[test]
+    fn explicit_sleep_settings_are_preserved() {
+        let conn = open_memory().unwrap();
+        save_sleep_hours_settings(&conn, false, "21:00", "07:00").unwrap();
+        let s = read_sleep_hours_settings(&conn).unwrap();
+        assert!(!s.enabled);
+        assert_eq!(s.start_hm, "21:00");
+        assert_eq!(s.end_hm, "07:00");
     }
 
     #[test]

@@ -8,10 +8,15 @@ use crate::export::{self, HistoryReport};
 use crate::AppState;
 use rusqlite::Connection;
 use serde::Deserialize;
+#[cfg(desktop)]
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
+#[cfg(desktop)]
 use tauri::webview::PageLoadEvent;
+#[cfg(desktop)]
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, State};
+#[cfg(desktop)]
 use tauri_plugin_dialog::DialogExt;
 
 #[derive(Debug, Deserialize)]
@@ -328,6 +333,22 @@ fn build_report_locked(
     export::build_history_report(conn, since_unix, until_unix, unix_now())
 }
 
+/// Mobile webviews have no native "save as" dialog; the UI hides export there.
+#[cfg(mobile)]
+const MOBILE_EXPORT_UNSUPPORTED: &str =
+    "file export and printing are available in the desktop app";
+
+#[cfg(mobile)]
+#[tauri::command]
+pub fn export_history_file(
+    _app: AppHandle,
+    _state: State<'_, AppState>,
+    _input: ExportHistoryInput,
+) -> Result<ExportHistoryResult, AppError> {
+    Err(AppError::Export(MOBILE_EXPORT_UNSUPPORTED.into()))
+}
+
+#[cfg(desktop)]
 #[tauri::command]
 pub fn export_history_file(
     app: AppHandle,
@@ -385,9 +406,22 @@ pub fn history_report_html(
     Ok(export::report_to_html(&report))
 }
 
+#[cfg(desktop)]
 const HISTORY_REPORT_WINDOW_LABEL: &str = "history-report";
 
+#[cfg(mobile)]
+#[tauri::command]
+pub async fn history_report_print(
+    _app: AppHandle,
+    _state: State<'_, AppState>,
+    _since_unix: i64,
+    _until_unix: i64,
+) -> Result<(), AppError> {
+    Err(AppError::Export(MOBILE_EXPORT_UNSUPPORTED.into()))
+}
+
 /// Print via a dedicated Tauri webview (`window.open` is blocked in the embedded webview).
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn history_report_print(
     app: AppHandle,

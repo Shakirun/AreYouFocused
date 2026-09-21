@@ -1,6 +1,6 @@
 # AreYouFocused
 
-Desktop-first **random-ping** productivity tracker (WhatNow-style): honest, local-first, SQLite.
+Desktop-first **random-ping** productivity tracker (WhatNow-style): honest, local-first, SQLite. Ships as a **Windows** installer and a test-grade **Android APK** (see **Android** below).
 
 **Language policy:** All **public repo docs**, **in-app UI copy**, and **code comments** are **English** by default.
 
@@ -31,6 +31,11 @@ Desktop-first **random-ping** productivity tracker (WhatNow-style): honest, loca
 
 - **`AREYOUFOCUSED_DEV_PING_SECS`:** Set to a positive integer (seconds) to fire pings on a fixed short interval for local testing. **Unset** for normal behavior—a stray env var will affect release builds too and can look like notification spam. Example (PowerShell): `$env:AREYOUFOCUSED_DEV_PING_SECS = "15"; npm run tauri:dev`
 
+### Notifications (Android / Linux / macOS)
+
+- Pings and daily reminders are plain system notifications via `tauri-plugin-notification` (no action buttons; tap opens the app). Toast **Snooze / Still / ±15** buttons remain Windows-only.
+- **Android 13+** asks for notification permission on first launch. If you decline, the Capture tab shows a warning until you enable notifications in the phone's app settings.
+
 ## Development
 
 - **Tests:** Rust domain and DB logic live in the library crate—prefer **red → green** for scheduler/repo behavior (`cd src-tauri && cargo test`). The `are-you-focused` binary is a thin shim (`test = false` on the bin).
@@ -46,6 +51,8 @@ Optional editor-specific tooling or personal notes can live outside tracked file
 
 ## Runtime (Windows desktop)
 
+(For phones see **Android** below.)
+
 - **OS:** Windows 10 or later (64-bit; matches Tauri target).
 - **WebView2:** UI runs in **Microsoft Edge WebView2**. **Evergreen** runtime ships with current Windows 10/11 for most users. If the window is blank or the app exits on startup, install or repair from [WebView2 Runtime — consumer download](https://developer.microsoft.com/microsoft-edge/webview2/consumer/) or [WebView2 overview](https://developer.microsoft.com/microsoft-edge/webview2/).
 - **Installers:** NSIS uses **`webviewInstallMode.downloadBootstrapper`** so users without WebView2 get the official bootstrapper when needed; see [Distribute your app and the WebView2 Runtime](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution).
@@ -60,11 +67,62 @@ Stable installers are published on **[GitHub Releases](https://github.com/Shakir
 
 Direct link pattern: `https://github.com/Shakirun/AreYouFocused/releases/download/v<version>/AreYouFocused_<version>_x64-setup.exe`
 
+## Android
+
+The same Tauri app builds into an APK for **Android 7.0+ (API 24)**, arm64 + armv7. It is meant for **hands-on testing on your own phone**, not for store distribution yet.
+
+### Get the APK
+
+- **Releases:** every `v*` tag also gets `AreYouFocused_<version>_android.apk` attached to the [GitHub Release](https://github.com/Shakirun/AreYouFocused/releases).
+- **Any branch / PR:** the **[Android APK workflow](.github/workflows/android.yml)** runs on pushes to `main`/`develop`, on pull requests, and manually (**Actions → Android APK → Run workflow**). Download the `AreYouFocused_<version>_android.apk` artifact from the run summary and unzip it.
+
+### Install on the phone
+
+1. Copy the `.apk` to the phone (USB, cloud drive, messenger, `adb install -r AreYouFocused_<version>_android.apk`).
+2. Open it and allow **Install unknown apps** for the app you opened it from (Files, browser, …).
+3. On first launch allow **notifications** — pings arrive as notifications.
+4. **Updating:** without a configured release keystore each CI run signs with a fresh **debug** key, so Android refuses to install a new build over an old one (“App not installed”). Uninstall the previous build first, or set up signing (below) once so updates install in place.
+
+### What differs from desktop
+
+- **Background pings:** the scheduler is an in-process loop, and Android freezes background apps. To bridge that, the app also hands the **next** ping to the OS as a scheduled notification (`AlarmManager`), so it fires even when the app is frozen or swiped away. Only that one ping is pre-scheduled — the chain continues once you open the app (tapping the notification is enough). **Daily reminders** are in-process only for now, so they need the app to be running. Excluding AreYouFocused from battery optimization makes both more reliable.
+- Notifications have **no action buttons** (Snooze / Still / ±15 are handled inside the app).
+- **CSV / XLSX / PDF export** is hidden on the phone (needs a native save dialog and a print window); **Copy** on the History tab still works.
+- No system tray; the app layout fills the screen and the tab panel scrolls.
+
+### Build locally
+
+Prerequisites: Node 18+, Rust stable (1.85+), **JDK 17+**, Android SDK with **NDK 27** (`sdkmanager "ndk;27.2.12479018" "platform-tools"`), and Rust targets `rustup target add aarch64-linux-android armv7-linux-androideabi`.
+
+```bash
+export ANDROID_HOME=~/Android/Sdk            # or wherever the SDK lives
+export NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018
+npm ci
+npm run tauri android build -- --apk --target aarch64   # add --target armv7 for 32-bit phones
+# → src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk
+npm run tauri android dev                                # live-reload on a connected device/emulator
+```
+
+The Android project lives in **`src-tauri/gen/android`** and is committed (manifest, theme, edge-to-edge inset handling in `MainActivity.kt`, signing in `app/build.gradle.kts`). Do **not** re-run `tauri android init`; it would overwrite those changes.
+
+### Release signing (optional, recommended for repeated installs)
+
+1. Create a keystore once: `keytool -genkey -v -keystore areyoufocused.jks -keyalg RSA -keysize 2048 -validity 10000 -alias areyoufocused`
+2. **Locally:** create `src-tauri/gen/android/keystore.properties` (git-ignored):
+
+   ```properties
+   keyAlias=areyoufocused
+   password=<store and key password>
+   storeFile=/absolute/path/areyoufocused.jks
+   ```
+
+3. **CI:** add repository secrets `ANDROID_KEYSTORE_BASE64` (`base64 -w0 areyoufocused.jks`), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`. The workflow signs with them when present and falls back to the debug key otherwise.
+
 ## Releases (maintainers)
 
 1. Merge **`develop` → `main`** when the release is ready; ensure **`src-tauri/tauri.conf.json`**, **`src-tauri/Cargo.toml`**, and **`package.json`** (non-`-dev` version on main) match the release number.
 2. On **`main`**, create and push an annotated tag: `git tag -a v0.3.0 -m "v0.3.0"` then `git push origin v0.3.0`.
-3. The **[Release workflow](.github/workflows/release.yml)** builds the NSIS installer on `windows-latest` and attaches it to the GitHub Release for that tag.
+3. The **[Release workflow](.github/workflows/release.yml)** builds the NSIS installer on `windows-latest` and attaches it to the GitHub Release for that tag; the **[Android APK workflow](.github/workflows/android.yml)** attaches the APK to the same release.
 4. Optional: run the same workflow manually via **Actions → Release → Run workflow** (version input must match `tauri.conf.json`).
 
 Code signing is not configured in CI yet; Windows SmartScreen may warn on first download until signing is added later.

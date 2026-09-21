@@ -19,7 +19,7 @@
 @layer base {
   :root {
     /* Keep in sync with MAX_WINDOW_INNER_HEIGHT in useFitWindowHeight.ts */
-    --app-max-inner-height: 770px;
+    --app-max-inner-height: 860px;
   }
 
   details:not([open]) {
@@ -34,11 +34,32 @@
     overflow-x: hidden;
     /* Window height is driven by Tauri fit-to-content; avoid page scrollbars. */
     overflow-y: hidden;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  input,
+  textarea,
+  select,
+  [contenteditable="true"] {
+    -webkit-user-select: text;
+    user-select: text;
   }
 
   /* Tall tab panels scroll inside the capped shell (see App.tsx .app-tab-scroll). */
   .app-tab-scroll {
     scrollbar-gutter: stable;
+  }
+
+  /*
+   * Mobile: the webview is the whole screen, so the shell fills the viewport and
+   * the tab panel scrolls instead of resizing a window. System bar / keyboard
+   * insets are applied natively (see gen/android MainActivity.kt).
+   */
+  .app-shell-mobile {
+    height: 100vh;
+    height: 100dvh;
+    max-height: none;
   }
 
   @media (prefers-reduced-motion: reduce) {
