@@ -8,10 +8,13 @@ mod daily_scheduler;
 mod scheduler;
 #[cfg(desktop)]
 mod tray;
+#[cfg(desktop)]
 mod window_util;
 
 use std::sync::{Arc, Mutex};
-use tauri::{Manager, WindowEvent};
+use tauri::Manager;
+#[cfg(desktop)]
+use tauri::WindowEvent;
 
 pub struct AppState {
     pub db: Mutex<rusqlite::Connection>,
@@ -23,8 +26,9 @@ pub fn run() {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let dir = app
                 .path()
@@ -49,21 +53,30 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             platform::init_notifications(&app.handle());
 
-            if let Some(win) = app.get_webview_window("capture") {
-                let _ = win.set_resizable(false);
+            #[cfg(desktop)]
+            {
+                if let Some(win) = app.get_webview_window("capture") {
+                    let _ = win.set_resizable(false);
+                }
             }
 
             Ok(())
-        })
-        .on_window_event(|window, event| {
-            if window.label() != "capture" {
-                return;
-            }
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
-            }
-        })
+        });
+
+    // Desktop: closing the capture window minimizes to tray instead of quitting.
+    // Mobile has no close button and no tray; the OS manages the activity lifecycle.
+    #[cfg(desktop)]
+    let builder = builder.on_window_event(|window, event| {
+        if window.label() != "capture" {
+            return;
+        }
+        if let WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = window.hide();
+        }
+    });
+
+    builder
         .invoke_handler(tauri::generate_handler![
             commands::submit_capture,
             commands::get_current_activity,

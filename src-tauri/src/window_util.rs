@@ -1,4 +1,5 @@
-//! Shared helpers for the main capture webview window.
+//! Shared helpers for the main capture webview window (desktop only: tray and toast
+//! activation bring the window back; mobile has a single full-screen activity).
 
 use tauri::{AppHandle, Manager, Runtime};
 

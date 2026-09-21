@@ -29,19 +29,33 @@ fn sleep_secs_until(next_unix: i64, now_unix: i64) -> u64 {
 /// Re-read `next_ping_at` frequently so snooze / capture updates can shorten an in-flight sleep.
 const SLEEP_POLL_SECS: u64 = 5;
 
-async fn sleep_until_next_ping_due(handle: &AppHandle) {
+/// Whether a ping at `at_unix` would be suppressed by the configured sleeping hours.
+fn falls_in_sleep_hours(conn: &rusqlite::Connection, at_unix: i64) -> bool {
+    match sleep_hours::read_sleep_hours_settings(conn) {
+        Ok(s) if s.enabled => {
+            sleep_hours::is_in_sleep_window_at_unix(at_unix, &s.start_hm, &s.end_hm)
+                .unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
+async fn sleep_until_next_ping_due(handle: &AppHandle, notifier: &dyn PingNotifier) {
     loop {
-        let sleep_secs = {
+        let (sleep_secs, os_ping_at) = {
             let state = handle.state::<AppState>();
             let mut db = state.db.lock().unwrap_or_else(|p| p.into_inner());
             let conn = &mut *db;
             let mut rng = rand::thread_rng();
             let now = unix_now();
             match repo::ensure_next_ping_scheduled(conn, now, &mut rng) {
-                Ok(next) => sleep_secs_until(next, unix_now()),
+                Ok(next) => {
+                    let os_ping_at = (!falls_in_sleep_hours(conn, next)).then_some(next);
+                    (sleep_secs_until(next, unix_now()), os_ping_at)
+                }
                 Err(e) => {
                     tracing::error!("scheduler: ensure next ping: {e}");
-                    60u64
+                    (60u64, None)
                 }
             }
         };
@@ -49,6 +63,9 @@ async fn sleep_until_next_ping_due(handle: &AppHandle) {
         if sleep_secs == 0 {
             break;
         }
+
+        // Outside the DB lock: this may call into the platform notification service.
+        notifier.sync_scheduled_ping(handle, os_ping_at);
 
         let chunk = sleep_secs.min(SLEEP_POLL_SECS);
         tokio::time::sleep(Duration::from_secs(chunk)).await;
@@ -82,7 +99,7 @@ pub fn spawn_ping_loop(handle: AppHandle, notifier: Arc<dyn PingNotifier>) {
             if let Some(dev_s) = dev_secs {
                 tokio::time::sleep(Duration::from_secs(dev_s)).await;
             } else {
-                sleep_until_next_ping_due(&handle).await;
+                sleep_until_next_ping_due(&handle, notifier.as_ref()).await;
             }
 
             let in_sleep = {
@@ -137,4 +154,38 @@ pub fn spawn_ping_loop(handle: AppHandle, notifier: Arc<dyn PingNotifier>) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::open_memory;
+    use chrono::{Local, NaiveTime, TimeZone};
+
+    fn local_unix(h: u32, m: u32) -> i64 {
+        let date = Local::now().date_naive();
+        let t = NaiveTime::from_hms_opt(h, m, 0).unwrap();
+        Local
+            .from_local_datetime(&date.and_time(t))
+            .single()
+            .unwrap()
+            .timestamp()
+    }
+
+    #[test]
+    fn os_ping_mirror_skips_sleeping_hours_only_when_enabled() {
+        let conn = open_memory().unwrap();
+        sleep_hours::save_sleep_hours_settings(&conn, true, "22:00", "08:00").unwrap();
+        assert!(falls_in_sleep_hours(&conn, local_unix(23, 30)));
+        assert!(!falls_in_sleep_hours(&conn, local_unix(12, 0)));
+
+        sleep_hours::save_sleep_hours_settings(&conn, false, "22:00", "08:00").unwrap();
+        assert!(!falls_in_sleep_hours(&conn, local_unix(23, 30)));
+    }
+
+    #[test]
+    fn sleep_secs_until_clamps_past_to_zero() {
+        assert_eq!(sleep_secs_until(100, 200), 0);
+        assert_eq!(sleep_secs_until(200, 100), 100);
+    }
 }
