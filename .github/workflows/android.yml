@@ -1,0 +1,130 @@
+# Build the Android APK and upload it as a workflow artifact; on version tags also
+# attach it to the GitHub Release created by release.yml.
+name: Android APK
+
+on:
+  push:
+    branches: [main, develop]
+    tags:
+      - "v*"
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  NDK_VERSION: "27.2.12479018"
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" =~ ^v(.+)$ ]]; then
+            ver="${BASH_REMATCH[1]}"
+          else
+            ver="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "tag=v$ver" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: sdkmanager --install "ndk;${NDK_VERSION}" "platform-tools" > /dev/null
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: android
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Optional: stable release signing so updates install over previous builds.
+      # Secrets: ANDROID_KEYSTORE_BASE64 (base64 of a .jks), ANDROID_KEYSTORE_PASSWORD,
+      # ANDROID_KEY_ALIAS. Without them the APK is signed with a throwaway debug key.
+      - name: Configure release signing
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          if [[ -z "$KEYSTORE_B64" ]]; then
+            echo "No ANDROID_KEYSTORE_BASE64 secret; APK will use the debug signing key."
+            exit 0
+          fi
+          keystore="$RUNNER_TEMP/release.jks"
+          echo "$KEYSTORE_B64" | base64 --decode > "$keystore"
+          cat > src-tauri/gen/android/keystore.properties <<EOF
+          keyAlias=$KEY_ALIAS
+          password=$KEYSTORE_PASSWORD
+          storeFile=$keystore
+          EOF
+          echo "Release signing configured."
+
+      - name: Build APK
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+        run: npm run tauri android build -- --apk --target aarch64 --target armv7
+
+      - name: Stage APK
+        id: apk
+        run: |
+          ver="${{ steps.version.outputs.version }}"
+          built="$(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' -path '*release*' | head -n 1)"
+          if [[ -z "$built" ]]; then
+            echo "No release APK found under src-tauri/gen/android/app/build/outputs/apk" >&2
+            find src-tauri/gen/android/app/build/outputs -type f >&2 || true
+            exit 1
+          fi
+          mkdir -p releases
+          asset="releases/AreYouFocused_${ver}_android.apk"
+          cp "$built" "$asset"
+          echo "path=$asset" >> "$GITHUB_OUTPUT"
+          echo "name=AreYouFocused_${ver}_android.apk" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.apk.outputs.name }}
+          path: ${{ steps.apk.outputs.path }}
+          if-no-files-found: error
+
+      - name: Attach APK to GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: AreYouFocused ${{ steps.version.outputs.version }}
+          files: ${{ steps.apk.outputs.path }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
