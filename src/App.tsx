@@ -8,7 +8,9 @@ import {
   TimePickerField,
 } from "./TimePickerField";
 import { ensureNotificationPermission } from "./notifications";
+import { type MainTab } from "./mainTabs";
 import { IS_MOBILE } from "./platform";
+import { useMobileTabSwipe } from "./useMobileTabSwipe";
 import {
   MAX_WINDOW_INNER_HEIGHT,
   useFitWindowHeight,
@@ -38,8 +40,6 @@ type ActivityDigestRow = {
   totalMinutes: number;
   captureCount: number;
 };
-
-type MainTab = "capture" | "history" | "schedule" | "routines";
 
 type DigestPeriod = "day" | "week" | "month" | "all";
 
@@ -411,6 +411,13 @@ export default function App() {
   const [recentCaptures, setRecentCaptures] = useState<CaptureRow[]>([]);
   const [quickPicks, setQuickPicks] = useState<QuickPickRow[]>([]);
   const [mainTab, setMainTab] = useState<MainTab>("capture");
+  const tabPagerRef = useRef<HTMLDivElement>(null);
+  const tabSwipe = useMobileTabSwipe({
+    containerRef: tabPagerRef,
+    activeTab: mainTab,
+    onTabChange: setMainTab,
+    enabled: IS_MOBILE,
+  });
   const [digestPeriod, setDigestPeriod] = useState<DigestPeriod>("week");
   const [digest, setDigest] = useState<ActivityDigestRow[]>([]);
   const [digestCopied, setDigestCopied] = useState(false);
@@ -1196,7 +1203,22 @@ export default function App() {
         </button>
       </nav>
 
-      <div className="app-tab-scroll flex flex-col gap-3 overflow-y-auto">
+      <div
+        ref={tabPagerRef}
+        className={`app-tab-scroll flex flex-col overflow-y-auto ${
+          IS_MOBILE ? "app-tab-pager" : ""
+        }`}
+      >
+      <div
+        className={`flex flex-col gap-3 ${
+          IS_MOBILE ? "app-tab-pager-track" : ""
+        }${IS_MOBILE && tabSwipe.animate ? " is-settling" : ""}`}
+        style={
+          IS_MOBILE
+            ? { transform: `translateX(${tabSwipe.offsetPx}px)` }
+            : undefined
+        }
+      >
       {notificationsBlocked ? (
         <p
           className="rounded-lg border border-action/35 bg-action/[0.06] px-3 py-2 text-xs leading-snug text-ink/80"
@@ -2446,6 +2468,7 @@ export default function App() {
         </div>
       </form>
       ) : null}
+      </div>
       </div>
 
       {gapFillPrompt ? (

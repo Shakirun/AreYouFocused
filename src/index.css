@@ -51,6 +51,16 @@
     scrollbar-gutter: stable;
   }
 
+  .app-tab-pager {
+    overflow-x: hidden;
+    touch-action: pan-y;
+    overscroll-behavior-x: contain;
+  }
+
+  .app-tab-pager-track.is-settling {
+    transition: transform 220ms ease-out;
+  }
+
   /*
    * Mobile: the webview is the whole screen, so the shell fills the viewport and
    * the tab panel scrolls instead of resizing a window. System bar / keyboard
