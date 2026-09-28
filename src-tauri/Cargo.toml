@@ -31,6 +31,11 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 rust_xlsxwriter = "0.79"
 chrono = "0.4"
 tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
+
+# `tauri-plugin-notification::Schedule::At` takes a `time::OffsetDateTime` (mobile only).
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+time = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 tauri-winrt-notification = "0.7"
