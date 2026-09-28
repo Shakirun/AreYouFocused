@@ -1,5 +1,7 @@
 import { type RefObject, useEffect, useRef } from "react";
 
+import { IS_MOBILE } from "./platform";
+
 const WINDOW_INNER_WIDTH = 460;
 const MIN_INNER_HEIGHT = 320;
 export const MAX_WINDOW_INNER_HEIGHT = 860;
@@ -35,6 +37,9 @@ export function useFitWindowHeight(
   const debounceTimer = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => {
+    // Mobile webviews fill the screen; the OS owns the window size.
+    if (IS_MOBILE) return;
+
     let cancelled = false;
 
     async function apply() {
