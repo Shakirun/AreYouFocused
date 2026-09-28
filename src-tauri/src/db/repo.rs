@@ -1051,6 +1051,12 @@ mod tests {
     use rand::rngs::StdRng;
     use rand::SeedableRng;
 
+    /// Scheduler tests that are not about sleep hours assume quiet hours are off.
+    fn disable_sleep_for_test(conn: &rusqlite::Connection) {
+        crate::db::sleep_hours::save_sleep_hours_settings(conn, false, "22:00", "06:00")
+            .expect("disable sleep for scheduler test");
+    }
+
     #[test]
     fn opens_in_memory_applies_migration() {
         let conn = open_memory().expect("open memory db");
@@ -1144,6 +1150,7 @@ mod tests {
     #[test]
     fn set_ping_bounds_and_reschedule() {
         let conn = open_memory().expect("db");
+        disable_sleep_for_test(&conn);
         let mut rng = StdRng::seed_from_u64(11);
         set_ping_min_max_minutes(&conn, 5, 10, true).expect("set");
         assert_eq!(ping_min_max_minutes(&conn).unwrap(), (5, 10));
@@ -1296,6 +1303,7 @@ mod tests {
     #[test]
     fn ensure_next_ping_preserves_far_planned_check() {
         let conn = open_memory().expect("db");
+        disable_sleep_for_test(&conn);
         set_ping_min_max_minutes(&conn, 1, 2, true).expect("bounds");
         let now = 5_000_000_i64;
         let far = now + 4 * 3600;
@@ -1330,6 +1338,7 @@ mod tests {
     #[test]
     fn awaiting_followup_blank_minutes_uses_random_interval() {
         let conn = open_memory().expect("db");
+        disable_sleep_for_test(&conn);
         let mut rng = StdRng::seed_from_u64(5);
         set_ping_min_max_minutes(&conn, 10, 20, true).expect("bounds");
         set_awaiting_followup(&conn, true).expect("wait");
@@ -1390,6 +1399,7 @@ mod tests {
     #[test]
     fn persist_gap_after_shorten_logs_gap_and_planned_check() {
         let conn = open_memory().expect("db");
+        disable_sleep_for_test(&conn);
         let mut rng = StdRng::seed_from_u64(82);
         let created = 1_000_i64;
         let now = created + 90 * 60;

@@ -144,7 +144,13 @@ vite.config.ts.timestamp-*
 
 # Rust / Tauri
 src-tauri/target/
-src-tauri/gen/
+# Generated permission schemas; the Android project under src-tauri/gen/android is
+# committed (it carries the manifest, signing and inset handling for the APK).
+src-tauri/gen/schemas/
+# Android release signing material (see README "Android")
+src-tauri/gen/android/keystore.properties
+*.jks
+*.keystore
 
 # --- IDE / editor (local only) ---
 .idea/

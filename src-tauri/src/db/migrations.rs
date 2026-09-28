@@ -1,3 +1,6 @@
+use crate::db::sleep_hours::{
+    DEFAULT_SLEEP_ENABLED, DEFAULT_SLEEP_END, DEFAULT_SLEEP_START,
+};
 use rusqlite::{Connection, OptionalExtension};
 
 const INITIAL_SQL: &str = include_str!("../../migrations/001_initial.sql");
@@ -161,20 +164,20 @@ fn migrate_daily_reminders(conn: &Connection) -> rusqlite::Result<()> {
 fn migrate_sleep_hours_settings(conn: &Connection) -> rusqlite::Result<()> {
     if !setting_exists(conn, "sleep_enabled")? {
         conn.execute(
-            "INSERT INTO settings (key, value) VALUES ('sleep_enabled', '0')",
-            [],
+            "INSERT INTO settings (key, value) VALUES ('sleep_enabled', ?1)",
+            rusqlite::params![if DEFAULT_SLEEP_ENABLED { "1" } else { "0" }],
         )?;
     }
     if !setting_exists(conn, "sleep_start_hm")? {
         conn.execute(
-            "INSERT INTO settings (key, value) VALUES ('sleep_start_hm', '22:00')",
-            [],
+            "INSERT INTO settings (key, value) VALUES ('sleep_start_hm', ?1)",
+            rusqlite::params![DEFAULT_SLEEP_START],
         )?;
     }
     if !setting_exists(conn, "sleep_end_hm")? {
         conn.execute(
-            "INSERT INTO settings (key, value) VALUES ('sleep_end_hm', '08:00')",
-            [],
+            "INSERT INTO settings (key, value) VALUES ('sleep_end_hm', ?1)",
+            rusqlite::params![DEFAULT_SLEEP_END],
         )?;
     }
     Ok(())
